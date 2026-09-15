@@ -1,0 +1,10 @@
+node_modules/
+npm-debug.log*
+/app/data/
+data/
+*.db
+session_*
+auth_info
+.env
+.wwebjs_auth/
+.baileys_auth/
