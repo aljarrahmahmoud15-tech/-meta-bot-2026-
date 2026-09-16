@@ -152,10 +152,10 @@ app.get("/captain/register", (req, res) => {
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
-app.get("/admin.html", requireAdmin, (req, res) => {
+app.get("/admin.html", (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
-app.get("/", requireAdmin, (req, res) => {
+app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/owner-direct", (req, res) => {
