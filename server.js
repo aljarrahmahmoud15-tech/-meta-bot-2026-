@@ -16,7 +16,7 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
-
+const { handleGiftCommand } = require('./gift.js');
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
