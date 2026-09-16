@@ -35,10 +35,17 @@ function calculateSettlement({
   };
 }
 
+function calculateGiftDebit({ price, priceCents } = {}) {
+  const cents = priceCents === undefined ? Math.round(Number(price) * 100) : Math.round(Number(priceCents));
+  if (!Number.isSafeInteger(cents) || cents <= 0) throw new Error("Gift price must be a positive amount");
+  return { priceCents: cents };
+}
+
 module.exports = {
   REGULAR_PRODUCER_RATE_BPS,
   SPECIAL_ORDER_PRODUCER_RATE_BPS,
   COMPANY_FROM_PRODUCER_RATE_BPS,
   SPECIAL_ORDER_COMPANY_FROM_PRODUCER_RATE_BPS,
   calculateSettlement,
+  calculateGiftDebit,
 };

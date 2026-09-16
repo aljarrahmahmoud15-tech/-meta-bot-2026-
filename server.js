@@ -15,7 +15,7 @@ const sharp = require("sharp");
 sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
-const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole } = require("./message_guardrails");
+const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole, parseGiftCommand, isGiftCommandAllowed } = require("./message_guardrails");
 const { handleGiftCommand } = require('./gift.js');
 const app = express();
 app.set("trust proxy", 1);
@@ -1072,6 +1072,49 @@ function ensureCaptainUser(phone, name) {
     if (!String(error?.message || error).includes("UNIQUE")) throw error;
     return findCaptainByPhone(normalized, { activeOnly: true }) || findActiveRegisteredUser(normalized);
   }
+}
+function giftRecipientPhoneFromMention(mention, mentionedIds = []) {
+  const rawMention = String(mention || "").replace(/^@/, "");
+  const mentioned = Array.isArray(mentionedIds) ? mentionedIds : [];
+  const matchingId = mentioned.find((value) => String(value || "").split("@")[0].replace(/[^0-9]/g, "") === rawMention.replace(/[^0-9]/g, ""));
+  const normalized = phoneWithCountry(String(matchingId || rawMention).split("@")[0]);
+  return isValidJordanPhone(normalized) ? normalized : "";
+}
+
+async function handleGiftMessage(msg, groupId, senderPhone, senderName, parsedGift, insertedMessageId) {
+  if (!parsedGift || msg.fromMe) return false;
+  const recipientPhone = giftRecipientPhoneFromMention(parsedGift.recipientMention, msg.mentionedIds || msg._data?.mentionedJidList);
+  if (!isGiftCommandAllowed({ message: msg, senderPhone, botPhone: connectedBotPhone(), recipientPhone })) return false;
+  const knownRecipient = db.prepare("SELECT id,phone,name,active FROM users WHERE phone=? LIMIT 1").get(recipientPhone);
+  const recipient = knownRecipient || { phone: recipientPhone, name: displayPhone(recipientPhone), active: 1 };
+  const sender = findActiveRegisteredUser(senderPhone) || ensureCaptainUser(senderPhone, senderName);
+  if (!sender || sender.active !== 1 || sender.role === "company" || sender.is_bot === 1) return false;
+  const result = await handleGiftCommand({
+    sock: client,
+    sender: { ...sender, name: senderName || sender.name },
+    recipient: { ...recipient, phone: recipientPhone },
+    giftId: parsedGift.giftId,
+    senderChatId: `${senderPhone}@c.us`,
+    debit: ({ priceCents, gift, recipient: target }) => {
+      const reference = `GIFT-${insertedMessageId}`;
+      const stamp = now();
+      return db.transaction(() => {
+        const existing = db.prepare("SELECT details_json FROM wallet_ledger WHERE idempotency_key=? LIMIT 1").get(reference);
+        if (existing) {
+          const details = existing.details_json ? JSON.parse(existing.details_json) : {};
+          return { ok: true, remainingBalanceCents: Number(details.remainingBalanceCents || 0), duplicate: true };
+        }
+        const current = db.prepare("SELECT wallet_cents,active FROM users WHERE id=?").get(sender.id);
+        if (!current || current.active !== 1 || Number(current.wallet_cents) < priceCents) return { ok: false, reason: "insufficient_balance" };
+        const remainingBalanceCents = Number(current.wallet_cents) - priceCents;
+        db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND wallet_cents>=?").run(remainingBalanceCents, stamp, sender.id, priceCents);
+        db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(sender.id, "gift_debit", -priceCents, remainingBalanceCents, reference, `إرسال ${gift.name} إلى ${target.phone}`, stamp, JSON.stringify({ giftId: gift.id, recipientPhone: target.phone, remainingBalanceCents }), reference);
+        audit("gift.sent", "user", sender.id, { giftId: gift.id, recipientPhone: target.phone, priceCents, reference });
+        return { ok: true, remainingBalanceCents };
+      })();
+    },
+  });
+  return Boolean(result?.ok);
 }
 function captainAppUrl(baseUrl = process.env.PUBLIC_BASE_URL || "") {
   const normalized = String(baseUrl || "").replace(/\/$/, "");
@@ -2324,6 +2367,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!body) return;
   const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
   if (!messageId) return;
+  const giftCommand = parseGiftCommand(body);
+  if (giftCommand) {
+    await handleGiftMessage(msg, groupId, senderPhone, senderName, giftCommand, messageId);
+    return;
+  }
   const parsed = parseOrder(body);
   if (parsed.isOrder) {
     const producer = botGenerated
