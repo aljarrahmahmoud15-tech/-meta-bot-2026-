@@ -16,7 +16,8 @@ sharp.concurrency(1);
 sharp.cache({ memory: 8, files: 0, items: 4 });
 const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole, parseGiftCommand, isGiftCommandAllowed } = require("./message_guardrails");
-const { handleGiftCommand } = require('./gift.js');
+const { handleGiftCommand, getGiftById } = require('./gift.js');
+const { getSubscriptionPlan, subscriptionExpiresAt, isSubscriptionActive } = require("./subscription");
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
@@ -55,6 +56,7 @@ if (DATA_DIR !== "/data") {
 ensureDir(AUTH_PATH);
 ensureDir(BAILEYS_AUTH_PATH);
 const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://bot.wasselni-biz.com").replace(/\/$/, "");
+const SUBSCRIPTION_REQUIRED = process.env.SUBSCRIPTION_REQUIRED !== "false";
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
 if (runningOnRender && !["/data", "/app/data"].includes(path.resolve(process.env.DATA_DIR || DATA_DIR)) && DATA_DIR !== path.join(__dirname, "data")) {
   throw new Error(`Persistent DATA_DIR must be /data or /app/data on Render; received ${DATA_DIR}`);
@@ -182,6 +184,27 @@ CREATE TABLE IF NOT EXISTS users (
   is_bot INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  plan TEXT NOT NULL CHECK(plan IN ('monthly','yearly')),
+  price_cents INTEGER NOT NULL,
+  starts_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('active','expired','cancelled')) DEFAULT 'active',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id,status,expires_at);
+CREATE TABLE IF NOT EXISTS gift_claims (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  gift_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  claimed_at TEXT NOT NULL,
+  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS staff_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1115,6 +1138,11 @@ async function handleGiftMessage(msg, groupId, senderPhone, senderName, parsedGi
   const recipient = knownRecipient || { phone: recipientPhone, name: displayPhone(recipientPhone), active: 1 };
   const sender = findActiveRegisteredUser(senderPhone) || ensureCaptainUser(senderPhone, senderName);
   if (!sender || sender.active !== 1 || sender.role === "company" || sender.is_bot === 1) return false;
+  const subscription = subscriptionResponse(sender.id);
+  if (!subscription.active) {
+    await client.sendMessage(`${senderPhone}@c.us`, { text: "❌ اشتراك فعال مطلوب لإرسال أو استلام الهدايا. استخدم /subscribe لاختيار خطة." });
+    return true;
+  }
   const result = await handleGiftCommand({
     sock: client,
     sender: { ...sender, name: senderName || sender.name },
@@ -2908,6 +2936,75 @@ function requireCaptain(req, res, next) {
   req.captainSession = session;
   next();
 }
+function currentSubscription(userId) {
+  const subscription = db.prepare("SELECT * FROM subscriptions WHERE user_id=? ORDER BY expires_at DESC,id DESC LIMIT 1").get(userId);
+  if (subscription && subscription.status === "active" && !isSubscriptionActive(subscription)) {
+    db.prepare("UPDATE subscriptions SET status='expired' WHERE id=? AND status='active'").run(subscription.id);
+    subscription.status = "expired";
+  }
+  return subscription || null;
+}
+function subscriptionResponse(userId) {
+  const subscription = currentSubscription(userId);
+  return {
+    userId: Number(userId),
+    required: SUBSCRIPTION_REQUIRED,
+    active: !SUBSCRIPTION_REQUIRED || isSubscriptionActive(subscription),
+    subscription: subscription ? { id: subscription.id, plan: subscription.plan, status: subscription.status, startsAt: subscription.starts_at, expiresAt: subscription.expires_at, priceCents: subscription.price_cents } : null,
+  };
+}
+app.post("/subscribe", requireCaptain, (req, res) => {
+  const userId = Number(req.captainSession.userId);
+  const plan = getSubscriptionPlan(req.body?.plan);
+  const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!plan) return res.status(400).json({ error: "خطة الاشتراك يجب أن تكون monthly أو yearly", plans: { monthly: "5 JOD", yearly: "50 JOD" } });
+  if (!/^[A-Za-z0-9:_-]{16,100}$/.test(idempotencyKey)) return res.status(400).json({ error: "idempotencyKey مطلوب بطول 16 إلى 100 حرفًا" });
+  try {
+    const result = db.transaction(() => {
+      const existing = db.prepare("SELECT id,plan,starts_at,expires_at,status FROM subscriptions WHERE idempotency_key=? LIMIT 1").get(idempotencyKey);
+      if (existing) return { duplicate: true, subscription: existing, balanceCents: db.prepare("SELECT wallet_cents FROM users WHERE id=?").get(userId)?.wallet_cents || 0 };
+      const user = db.prepare("SELECT id,wallet_cents,active,role FROM users WHERE id=? LIMIT 1").get(userId);
+      if (!user || user.role !== "captain" || user.active !== 1) throw Object.assign(new Error("حساب المستخدم غير مفعل"), { statusCode: 403 });
+      const existingActive = currentSubscription(userId);
+      if (existingActive && isSubscriptionActive(existingActive)) throw Object.assign(new Error("لديك اشتراك فعال بالفعل"), { statusCode: 409 });
+      if (Number(user.wallet_cents) < plan.priceCents) throw Object.assign(new Error("رصيد غير كافٍ للاشتراك"), { statusCode: 402 });
+      const stamp = now();
+      const expiresAt = subscriptionExpiresAt(new Date(stamp), plan.durationMonths);
+      const remainingBalanceCents = Number(user.wallet_cents) - plan.priceCents;
+      db.prepare("UPDATE users SET wallet_cents=?,updated_at=? WHERE id=? AND wallet_cents>=?").run(remainingBalanceCents, stamp, userId, plan.priceCents);
+      const subscription = db.prepare("INSERT INTO subscriptions(user_id,plan,price_cents,starts_at,expires_at,status,idempotency_key,created_at) VALUES(?,?,?,?,?,'active',?,?)").run(userId, plan.id, plan.priceCents, stamp, expiresAt, idempotencyKey, stamp);
+      db.prepare("INSERT INTO wallet_ledger(user_id,type,amount_cents,balance_after_cents,reference,note,created_at,details_json,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)").run(userId, "subscription_debit", -plan.priceCents, remainingBalanceCents, `SUBSCRIPTION-${subscription.lastInsertRowid}`, `اشتراك ${plan.id}`, stamp, JSON.stringify({ plan: plan.id, priceCents: plan.priceCents, expiresAt }), idempotencyKey);
+      audit("subscription.purchased", "subscription", subscription.lastInsertRowid, { userId, plan: plan.id, priceCents: plan.priceCents, expiresAt });
+      return { duplicate: false, subscription: db.prepare("SELECT * FROM subscriptions WHERE id=?").get(subscription.lastInsertRowid), balanceCents: remainingBalanceCents };
+    })();
+    res.status(result.duplicate ? 200 : 201).json({ success: true, duplicate: result.duplicate, ...subscriptionResponse(userId), balanceCents: result.balanceCents });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "تعذر إنشاء الاشتراك" });
+  }
+});
+app.get("/check-subscription/:userId", (req, res) => {
+  const userId = Number(req.params.userId);
+  if (!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ error: "userId غير صحيح" });
+  res.json(subscriptionResponse(userId));
+});
+app.post("/gift/claim", requireCaptain, (req, res) => {
+  const userId = Number(req.captainSession.userId);
+  const gift = getGiftById(req.body?.giftId);
+  if (!gift) return res.status(400).json({ error: "معرف الهدية غير موجود" });
+  const access = subscriptionResponse(userId);
+  if (!access.active) return res.status(403).json({ error: "اشتراك فعال مطلوب لاستلام الهدية", subscription: access });
+  const claimIdempotencyKey = String(req.body?.idempotencyKey || "").trim();
+  if (!/^[A-Za-z0-9:_-]{16,100}$/.test(claimIdempotencyKey)) return res.status(400).json({ error: "idempotencyKey مطلوب بطول 16 إلى 100 حرفًا" });
+  const claim = db.transaction(() => {
+    const existing = db.prepare("SELECT user_id,gift_id,claimed_at,idempotency_key FROM gift_claims WHERE idempotency_key=? LIMIT 1").get(claimIdempotencyKey);
+    if (existing) return { ...existing, duplicate: true };
+    const claimedAt = now();
+    db.prepare("INSERT INTO gift_claims(user_id,gift_id,idempotency_key,claimed_at) VALUES(?,?,?,?)").run(userId, gift.id, claimIdempotencyKey, claimedAt);
+    audit("gift.claimed", "gift_claim", claimIdempotencyKey, { userId, giftId: gift.id });
+    return { user_id: userId, gift_id: gift.id, claimed_at: claimedAt, idempotency_key: claimIdempotencyKey, duplicate: false };
+  })();
+  res.status(claim.duplicate ? 200 : 201).json({ success: true, duplicate: claim.duplicate, claim: { userId: claim.user_id, giftId: claim.gift_id, name: gift.name, emoji: gift.emoji, desc: gift.desc || gift.description, claimedAt: claim.claimed_at, idempotencyKey: claim.idempotency_key }, subscription: access });
+});
 function validAdminPassword(value) {
   const password = String(value || "");
   if (ADMIN_PASSWORD && constantTimeEquals(password, ADMIN_PASSWORD)) return true;

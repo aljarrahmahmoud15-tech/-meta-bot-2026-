@@ -3,7 +3,7 @@ services:
     name: "-meta-bot-2026-"
     runtime: node
     runtimeVersion: "22.13.0"
-    plan: standard
+    plan: starter
     buildCommand: npm ci --omit=dev
     startCommand: node server.js
     healthCheckPath: /health
@@ -37,6 +37,8 @@ services:
         value: /data/.baileys_auth
       - key: BAILEYS_ENABLED
         value: "false"
+      - key: SUBSCRIPTION_REQUIRED
+        value: "true"
       - key: API_RATE_LIMIT_MAX
         value: "120"
       - key: RATE_LIMIT_WINDOW_MS
