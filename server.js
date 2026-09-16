@@ -25,15 +25,15 @@ const BOT_PHONE = process.env.BOT_PHONE?.trim() || process.env.PHONE?.trim() || 
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962775969880";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
-const DATA_DIR = process.env.DATA_DIR || "/data";
+const DATA_DIR = process.env.DATA_DIR || "/app/data";
 const SESSION_PATH = process.env.SESSION_PATH || path.join(DATA_DIR, "auth");
 const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, "db_0775969880.db");
 const AUTH_PATH = process.env.AUTH_PATH || SESSION_PATH;
 const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
 const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://bot.wasselni-biz.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
-if (runningOnRender && path.resolve(DATA_DIR) !== "/data") {
-  throw new Error(`Persistent DATA_DIR is required on Render at /data; received ${DATA_DIR}`);
+if (runningOnRender && !["/data", "/app/data"].includes(path.resolve(DATA_DIR))) {
+  throw new Error(`Persistent DATA_DIR must be /data or /app/data on Render; received ${DATA_DIR}`);
 }
 // Baileys is an optional second WhatsApp connection. Keep it off by default on Render
 // so the primary whatsapp-web.js session has the available memory and one QR/session.

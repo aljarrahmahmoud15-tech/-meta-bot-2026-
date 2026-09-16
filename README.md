@@ -45,7 +45,7 @@ npm test
 
 ## Docker وRender
 
-يبني `Dockerfile` صورة Node 22 مع Chromium ويستخدم `npm ci --omit=dev`. إعداد `render.yaml` يجهز قرصًا دائمًا بحجم 10GB في `/data` لحفظ جلسة واتساب تحت `/data/auth` وقاعدة SQLite. يجب ضبط الأسرار مثل `ADMIN_TOKEN` و`JWT_SECRET` وبيانات جلسة واتساب في بيئة المنصة، وعدم وضعها في Git.
+يبني `Dockerfile` صورة Node 22 مع Chromium ويستخدم `npm ci --omit=dev`. إعداد `render.yaml` يجهز قرصًا دائمًا بحجم 1GB في `/app/data` لحفظ جلسة واتساب تحت `/app/data/auth` وقاعدة SQLite. يجب ضبط الأسرار مثل `ADMIN_TOKEN` و`JWT_SECRET` وبيانات جلسة واتساب في بيئة المنصة، وعدم وضعها في Git.
 
 ## ملفات النظام
 

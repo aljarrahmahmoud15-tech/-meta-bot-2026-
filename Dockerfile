@@ -3,13 +3,13 @@ RUN apt-get update && apt-get install -y chromium fonts-liberation libasound2 li
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV NODE_ENV=production
-ENV DATA_DIR=/data
-ENV AUTH_PATH=/data/auth
-ENV BAILEYS_AUTH_PATH=/data/.baileys_auth
+ENV DATA_DIR=/app/data
+ENV AUTH_PATH=/app/data/auth
+ENV BAILEYS_AUTH_PATH=/app/data/.baileys_auth
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
-RUN mkdir -p /data
+RUN mkdir -p /app/data
 EXPOSE 10000
 CMD ["node", "server.js"]
