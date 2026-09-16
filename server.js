@@ -25,14 +25,38 @@ const BOT_PHONE = process.env.BOT_PHONE?.trim() || process.env.PHONE?.trim() || 
 const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962775969880";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
-const DATA_DIR = process.env.DATA_DIR || "/app/data";
-const SESSION_PATH = process.env.SESSION_PATH || path.join(DATA_DIR, "auth");
-const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, "db_0775969880.db");
-const AUTH_PATH = process.env.AUTH_PATH || SESSION_PATH;
-const BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
+let DATA_DIR = process.env.DATA_DIR || "/data";
+function ensureDir(directory) {
+  try {
+    fs.mkdirSync(directory, { recursive: true });
+    return directory;
+  } catch (error) {
+    if (error.code === "EACCES" && directory === "/data") {
+      const fallback = path.join(__dirname, "data");
+      fs.mkdirSync(fallback, { recursive: true });
+      DATA_DIR = fallback;
+      console.warn(`[Storage] /data is not writable; using ${fallback}. Attach the Render disk to /data for persistence.`);
+      return fallback;
+    }
+    throw error;
+  }
+}
+ensureDir(DATA_DIR);
+let SESSION_PATH = process.env.SESSION_PATH || path.join(DATA_DIR, "auth");
+let DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, "db_0775969880.db");
+let AUTH_PATH = process.env.AUTH_PATH || SESSION_PATH;
+let BAILEYS_AUTH_PATH = process.env.BAILEYS_AUTH_PATH || path.join(DATA_DIR, ".baileys_auth");
+if (DATA_DIR !== "/data") {
+  if (AUTH_PATH.startsWith("/data/")) AUTH_PATH = path.join(DATA_DIR, "auth");
+  if (BAILEYS_AUTH_PATH.startsWith("/data/")) BAILEYS_AUTH_PATH = path.join(DATA_DIR, ".baileys_auth");
+  if (SESSION_PATH.startsWith("/data/")) SESSION_PATH = path.join(DATA_DIR, "auth");
+  if (DB_PATH.startsWith("/data/")) DB_PATH = path.join(DATA_DIR, path.basename(DB_PATH));
+}
+ensureDir(AUTH_PATH);
+ensureDir(BAILEYS_AUTH_PATH);
 const PUBLIC_APP_URL = String(process.env.PUBLIC_BASE_URL || "https://bot.wasselni-biz.com").replace(/\/$/, "");
 const runningOnRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_INSTANCE_ID);
-if (runningOnRender && !["/data", "/app/data"].includes(path.resolve(DATA_DIR))) {
+if (runningOnRender && !["/data", "/app/data"].includes(path.resolve(process.env.DATA_DIR || DATA_DIR)) && DATA_DIR !== path.join(__dirname, "data")) {
   throw new Error(`Persistent DATA_DIR must be /data or /app/data on Render; received ${DATA_DIR}`);
 }
 // Baileys is an optional second WhatsApp connection. Keep it off by default on Render
@@ -85,7 +109,6 @@ const apiRate = new Map();
 const qrRate = new Map();
 const cardDeliveryInFlight = new Set();
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
 const PERSISTED_ADMIN_TOKEN_PATH = path.join(DATA_DIR, "admin-token");
 let activeAdminToken = ADMIN_TOKEN;
 if (!activeAdminToken) {
