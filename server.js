@@ -32,11 +32,11 @@ function ensureDir(directory) {
     fs.mkdirSync(directory, { recursive: true });
     return directory;
   } catch (error) {
-    if (error.code === "EACCES" && directory === "/data") {
+    if (error.code === "EACCES" && ["/data", "/app/data"].includes(directory)) {
       const fallback = path.join(__dirname, "data");
       fs.mkdirSync(fallback, { recursive: true });
       DATA_DIR = fallback;
-      console.warn(`[Storage] /data is not writable; using ${fallback}. Attach the Render disk to /data for persistence.`);
+      console.warn(`[Storage] ${directory} is not writable; using ${fallback}. Attach the Render disk to the configured persistent path for persistence.`);
       return fallback;
     }
     throw error;
@@ -145,17 +145,17 @@ app.use("/api", (req, res, next) => {
 });
 app.get("/health", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
-  res.status(200).json({ ok: true, service: "-meta-bot-2026-", whatsapp: whatsappState, ready: Boolean(isReady) });
+  res.status(200).json({ ok: true, service: "meta-bot-aljarah", whatsapp: whatsappState, ready: Boolean(isReady) });
 });
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
   res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
 });
-app.get("/admin.html", (req, res) => {
+app.get("/admin.html", requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
-app.get("/", (req, res) => {
+app.get("/", requireAdmin, (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
 app.get("/owner-direct", (req, res) => {

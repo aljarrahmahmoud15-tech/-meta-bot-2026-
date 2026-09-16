@@ -1,7 +1,7 @@
 {
-  "name": "-meta-bot-2026-",
-  "version": "3.1.0",
-  "description": "Al-Jarah Logistics WhatsApp operations and wallet system",
+  "name": "meta-bot-aljarah",
+  "version": "4.0.0",
+  "description": "Meta Bot Al-Jarah WhatsApp operations, wallets, settlements, and gifts",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

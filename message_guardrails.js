@@ -19,7 +19,9 @@ function isBotFinancialRole(phone, botPhone, role) {
 
 function parseGiftCommand(body = "") {
   const text = String(body).trim();
-  const match = text.match(/^هدية\s+(@[^\s]+)\s+([A-Za-z0-9_-]+)$/iu);
+  const forward = text.match(/^(@[^\s]+)\s+هدية\s+([A-Za-z0-9_-]+)$/iu);
+  const legacy = text.match(/^هدية\s+(@[^\s]+)\s+([A-Za-z0-9_-]+)$/iu);
+  const match = forward || legacy;
   if (!match) return null;
   return { recipientMention: match[1], giftId: match[2] };
 }
