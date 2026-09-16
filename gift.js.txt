@@ -1,0 +1,40 @@
+/**
+ * gift.js - ميزة الهدايا لبوت الواتساب
+ * ضيف هذا الملف بجانب server.js
+ */
+
+const gifts = require('./gifts.json');
+
+function getRandomGift() {
+  return gifts[Math.floor(Math.random() * gifts.length)];
+}
+
+function formatGiftMessage(gift) {
+  return `🎁 *هديتك وصلت!*
+
+*${gift.name}*
+${gift.description}
+
+السعر: ${gift.price} ر.س
+${gift.image ? `📸 ${gift.image}` : ''}
+
+للطلب رد بكلمة *اطلب*`;
+}
+
+// استدعيها من داخل server.js
+// مثال: if (text === 'هدية' || text === '!هدية' || text.toLowerCase() === 'gift')
+async function handleGiftCommand(sock, chatId, sender) {
+  const gift = getRandomGift();
+  const message = formatGiftMessage(gift);
+  
+  await sock.sendMessage(chatId, { text: message });
+  
+  // تسجيل في قاعدة البيانات اذا عندك
+  console.log(`Gift sent to ${sender}: ${gift.name}`);
+}
+
+module.exports = {
+  handleGiftCommand,
+  getRandomGift,
+  formatGiftMessage
+};
