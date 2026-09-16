@@ -130,6 +130,9 @@ app.get("/captain/register", (req, res) => {
 app.get("/admin.html", (req, res) => {
   res.sendFile(path.join(__dirname, "admin.html"));
 });
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
 app.get("/owner-direct", (req, res) => {
   const provided = String(req.query.token || "");
   const validToken = OWNER_DIRECT_TOKEN && constantTimeEquals(provided, OWNER_DIRECT_TOKEN);

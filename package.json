@@ -1,11 +1,12 @@
 {
   "name": "-meta-bot-2026-",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Al-Jarah Logistics WhatsApp operations and wallet system",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
+    "check:all": "node --check server.js && node --check gift.js && node --check finance.js && node --check message_guardrails.js && node check_inline_scripts.js admin.html",
     "test": "node --test test_*.js"
   },
   "engines": {

@@ -2,6 +2,7 @@ services:
   - type: web
     name: "-meta-bot-2026-"
     runtime: node
+    runtimeVersion: "22.13.0"
     plan: standard
     buildCommand: npm ci --omit=dev
     startCommand: node server.js

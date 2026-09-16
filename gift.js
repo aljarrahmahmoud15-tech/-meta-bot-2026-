@@ -11,7 +11,7 @@ function formatGiftMessage(gift, { senderName = "", recipientName = "" } = {}) {
   const lines = [
     "🎁 *وصلتك هدية جديدة!*",
     `${gift.emoji} *${gift.name}*`,
-    gift.description,
+    gift.desc || gift.description,
     `القيمة: ${Number(gift.price).toFixed(2)} د.أ`,
   ];
   if (recipientName) lines.push(`إلى: ${recipientName}`);
@@ -38,7 +38,10 @@ async function handleGiftCommand({
   senderChatId,
 }) {
   const gift = getGiftById(giftId);
-  if (!gift) return { ok: false, reason: "gift_not_found" };
+  if (!gift) {
+    await sock.sendMessage(senderChatId, { text: "❌ معرف الهدية غير موجود. استخدم معرفًا من قائمة الهدايا." });
+    return { ok: false, reason: "gift_not_found" };
+  }
   const priceCents = calculateGiftDebit({ price: gift.price }).priceCents;
   const debitResult = await debit({ priceCents, gift, sender, recipient });
   if (!debitResult || debitResult.ok !== true) {

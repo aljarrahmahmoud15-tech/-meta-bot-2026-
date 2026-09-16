@@ -1,6 +1,7 @@
 const fs = require('fs');
 const { execFileSync } = require('child_process');
-const pages = ['public/index.html', 'public/join.html', 'public/captain.html', 'public/support.html'];
+const candidates = ['admin.html', 'public/index.html', 'public/join.html', 'public/captain.html', 'public/support.html'];
+const pages = candidates.filter((page) => fs.existsSync(page));
 let count = 0;
 for (const page of pages) {
   const html = fs.readFileSync(page, 'utf8');
