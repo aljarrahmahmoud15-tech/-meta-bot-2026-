@@ -2462,8 +2462,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (parsed.isOrder) {
     const producer = botGenerated
       ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
-      : ensureProducerUser(senderPhone, senderName);
-    if (!producer || producer.active === 0) return;
+      : findCaptainByPhone(senderPhone, { activeOnly: true });
+    if (!producer || producer.active !== 1 || producer.account_status !== "active") {
+      audit("order.rejected_unregistered_sender", "message", messageId, { groupId, senderPhone: senderPhone || null, senderName: senderName || null });
+      console.warn(`[Policy] order rejected from unregistered or inactive captain: ${senderPhone || "unknown"}`);
+      return;
+    }
     const candidate = createOrderCandidate({ messageId, groupId, body, producer, parsed });
     if (!candidate) return;
     return;
@@ -2474,7 +2478,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!quoted) return;
   const candidate = findOrderByQuotedMessage(groupId, quoted);
   if (!candidate) return;
-  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
+  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : findCaptainByPhone(senderPhone, { activeOnly: true });
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return;
