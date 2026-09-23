@@ -4986,6 +4986,8 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
   if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
   const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
+  const reactionConfirmed = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
+  if (!reactionConfirmed) return res.status(502).json({ error: "Bot reaction failed; settlement blocked", mutation: "none" });
   const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   const expected = {
     sourceMessageId,
