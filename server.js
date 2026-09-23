@@ -2828,9 +2828,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  const authorizedThumb = botProducer
-    ? (reactedByBot || hasBotConfirmationCard)
-    : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
+  // Historical recovery follows the live policy: any 👍 on the valid «تم»
+  // message confirms the booking; the reactor identity is intentionally ignored.
+  const authorizedThumb = thumbs.length > 0 || reactedByBot || hasBotConfirmationCard;
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
