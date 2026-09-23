@@ -2287,22 +2287,7 @@ async function resolveWhatsappUserPhone(...values) {
     const cached = whatsappLidPhoneCache.get(lid);
     if (cached && isValidJordanPhone(cached)) return cached;
   }
-  if (!client || !isReady || !lidIds.length) return "";
-  if (typeof client.getContactLidAndPhone !== "function") {
-    for (const lid of lidIds) {
-      try {
-        const contact = await withTimeout(client.getContactById(lid), 8000, null);
-        const phone = directJordanPhoneFromWhatsappValue(contact) || directJordanPhoneFromWhatsappValue(contact?.number) || directJordanPhoneFromWhatsappValue(contact?.id);
-        if (phone) {
-          whatsappLidPhoneCache.set(lid, phone);
-          return phone;
-        }
-      } catch (error) {
-        console.warn(`[WhatsApp] LID contact fallback failed: ${String(error?.message || error)}`);
-      }
-    }
-    return "";
-  }
+  if (!client || !isReady || !lidIds.length || typeof client.getContactLidAndPhone !== "function") return "";
   try {
     const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
     for (let index = 0; index < lidIds.length; index += 1) {
@@ -2317,18 +2302,6 @@ async function resolveWhatsappUserPhone(...values) {
   } catch (error) {
     console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
   }
-  for (const lid of lidIds) {
-    try {
-      const contact = await withTimeout(client.getContactById(lid), 8000, null);
-      const phone = directJordanPhoneFromWhatsappValue(contact) || directJordanPhoneFromWhatsappValue(contact?.number) || directJordanPhoneFromWhatsappValue(contact?.id);
-      if (phone) {
-        whatsappLidPhoneCache.set(lid, phone);
-        return phone;
-      }
-    } catch (error) {
-      console.warn(`[WhatsApp] LID empty-mapping fallback failed: ${String(error?.message || error)}`);
-    }
-  }
   return "";
 }
 async function resolveMessageSenderPhone(message, knownContact = null) {
@@ -2337,7 +2310,7 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
   if (!contact && typeof message?.getContact === "function") {
     contact = await withTimeout(message.getContact(), 8000, null);
   }
-  const resolved = await resolveWhatsappUserPhone(
+  return resolveWhatsappUserPhone(
     contact,
     contact?.number,
     contact?.id,
@@ -2350,15 +2323,6 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
     message?._data?.id?.participant,
     message?._data?.participant,
   );
-  if (resolved) return resolved;
-  const labels = [contact?.pushname, contact?.name, contact?.shortName, message?._data?.notifyName].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
-  if (!labels.length) return "";
-  const captains = db.prepare("SELECT phone,name FROM users WHERE role='captain' AND active=1 AND account_status='active'").all();
-  const match = captains.find((captain) => {
-    const name = String(captain.name || "").trim().toLowerCase();
-    return name && labels.some((label) => label === name || label.includes(name) || name.includes(label));
-  });
-  return match?.phone || "";
 }
 
 function recordGroupMessageTelemetry(event, msg) {
@@ -2418,25 +2382,38 @@ async function handleBaileysUpsert(message) {
 }
 
 async function reactToCaptainAcceptance(message, messageId) {
-  const targets = [];
-  if (message && typeof message.react === "function") targets.push(message);
-  if (client && isReady && messageId && typeof client.getMessageById === "function") {
-    const liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
-    if (liveMessage && typeof liveMessage.react === "function") targets.push(liveMessage);
-  }
-  const seen = new Set();
-  for (const target of targets) {
-    if (seen.has(target)) continue;
-    seen.add(target);
+  const target = message && typeof message.react === "function" ? message : null;
+  if (target) {
     try {
-      await withTimeout(Promise.resolve(target.react("👍")), 12000, null);
+      await withTimeout(target.react("👍"), 12000, null);
       return true;
     } catch (error) {
-      console.error("[WhatsApp] captain acceptance reaction attempt:", error.message);
+      console.warn("[WhatsApp] direct captain acceptance reaction failed:", error.message);
     }
   }
-  return false;
+  if (!client || !isReady || !messageId) return false;
+  try {
+    if (client.pupPage && typeof client.pupPage.evaluate === "function") {
+      const sent = await withTimeout(client.pupPage.evaluate(async (serializedId) => {
+        try {
+          const msg = window.Store?.Msg?.get(serializedId);
+          if (!msg || !window.WWebJS?.sendReactionToMessage) return false;
+          await window.WWebJS.sendReactionToMessage(msg, "👍");
+          return true;
+        } catch (_) { return false; }
+      }, messageId), 12000, false);
+      if (sent) return true;
+    }
+    const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
+    if (!liveMessage || typeof liveMessage.react !== "function") return false;
+    await withTimeout(liveMessage.react("👍"), 12000, null);
+    return true;
+  } catch (error) {
+    console.error("[WhatsApp] captain acceptance reaction:", error.message);
+    return false;
+  }
 }
+
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const groupId = resolveGroupChatId(msg);
@@ -2486,9 +2463,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  // قد يصل رد «تم» عبر أكثر من حدث WhatsApp؛ لا تمنع المعالجة المالية
-  // لمجرد أن سجل الرسالة أُدرج مسبقًا، فحالة المرشح تمنع التكرار فعليًا.
-  if (!insertedMessage.changes && !captainAcceptance) return;
+  if (!insertedMessage.changes) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
@@ -2505,12 +2480,8 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (parsed.isOrder) {
     const producer = botGenerated
       ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
-      : findCaptainByPhone(senderPhone, { activeOnly: true });
-    if (!producer || producer.active !== 1 || producer.account_status !== "active") {
-      audit("order.rejected_unregistered_sender", "message", messageId, { groupId, senderPhone: senderPhone || null, senderName: senderName || null });
-      console.warn(`[Policy] order rejected from unregistered or inactive captain: ${senderPhone || "unknown"}`);
-      return;
-    }
+      : ensureProducerUser(senderPhone, senderName);
+    if (!producer || producer.active === 0) return;
     const candidate = createOrderCandidate({ messageId, groupId, body, producer, parsed });
     if (!candidate) return;
     return;
@@ -2519,21 +2490,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
   if (!quoted) return;
-  let candidate = findOrderByQuotedMessage(groupId, quoted);
-  // إذا فات حدث message_create الخاص برسالة البوت، أنشئ المرشح من الرسالة المقتبسة
-  // فقط عندما تكون رسالة تشغيلية صادرة من البوت نفسه وفي القروب المعتمد.
-  const quotedMessageId = serializedMessageId(quoted);
-  const quotedIsBotMessage = Boolean(quoted.fromMe) || String(quotedMessageId || "").startsWith("true_");
-  if (!candidate && quotedIsBotMessage && isConfiguredGroup(groupId)) {
-    const quotedBody = String(quoted.body || "").trim();
-    const quotedParsed = parseOrder(quotedBody);
-    const botProducer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
-    if (quotedMessageId && quotedParsed.isOrder && botProducer && botProducer.active === 1 && botProducer.account_status === "active") {
-      candidate = createOrderCandidate({ messageId: quotedMessageId, groupId, body: quotedBody, producer: botProducer, parsed: quotedParsed });
-    }
-  }
+  const candidate = findOrderByQuotedMessage(groupId, quoted);
   if (!candidate) return;
-  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : findCaptainByPhone(senderPhone, { activeOnly: true });
+  const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
   if (!producer || captain.id === producer.id) return;
@@ -2550,11 +2509,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
   if (producer.is_bot === 1 || producer.role === "company") {
     const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) {
-      audit("order.acceptance_reaction_failed", "order_candidate", candidate.id, { messageId, reason: "bot_reaction_required_before_settlement" });
-      console.warn(`[Order] bot approval reaction failed; settlement blocked candidate=${candidate.id}`);
-      return;
-    }
+    if (!reacted) console.warn(`[Order] company approval reaction failed; continuing financial approval candidate=${candidate.id}`);
     // Bot/company ownership is already the approval authority. The visual reaction is
     // best-effort only; a WhatsApp UI reaction failure must not leave a valid booking
     // pending after a different captain replied «تم» to the quoted price.
@@ -2791,6 +2746,7 @@ function recoveryEvidenceSummary(evidence) {
 async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const acceptanceMessageId = serializedMessageId(acceptance);
   if (!acceptanceMessageId) return { match: false, reason: "acceptance_without_message_id" };
+  const botReactionConfirmed = Boolean(acceptance.__botReactionConfirmed);
   let liveAcceptance = acceptance;
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
@@ -2830,7 +2786,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     return { match: false, reason: "not_a_quoted_order", acceptanceMessageId };
   }
   const botProducer = (indexedQuoted?.fromMe || quoted.fromMe) && BOT_FINANCIAL_MODE === "company";
-  const reactionPresentOnAcceptance = Boolean(acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
+  const reactionPresentOnAcceptance = Boolean(botReactionConfirmed || acceptance.hasReaction || acceptance.__hasReaction || acceptance._data?.hasReaction || acceptance._data?.reactions?.length);
   const archivedReactions = acceptance.__reactions || (Array.isArray(acceptance?._data?.reactions) ? acceptance._data.reactions : null) || (reactionPresentOnAcceptance && !botProducer && typeof acceptance.getReactions === "function"
     ? await withTimeout(acceptance.getReactions(), 1500, null)
     : null);
@@ -2842,7 +2798,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     : (Array.isArray(archivedReactions) && archivedReactions.length ? archivedReactions : (liveAcceptance.__reactions || acceptance.__reactions || []));
   const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
   const reactionPhones = [];
-  let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
+  let reactedByBot = botReactionConfirmed || thumbs.some((reaction) => reaction.hasReactionByMe === true);
   for (const reaction of botProducer ? [] : thumbs) {
     for (const sender of Array.isArray(reaction.senders) ? reaction.senders : []) {
       const senderPhone = directJordanPhoneFromWhatsappValue(sender?.__senderPhone) || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || "" });
@@ -4986,8 +4942,9 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
   if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
   const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
-  const reactionConfirmed = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
-  if (!reactionConfirmed) return res.status(502).json({ error: "Bot reaction failed; settlement blocked", mutation: "none" });
+  const botReactionConfirmed = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
+  if (!botReactionConfirmed) return res.status(502).json({ error: "Unable to send the required bot 👍 reaction; settlement was not applied", mutation: "none" });
+  acceptance.__botReactionConfirmed = true;
   const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   const expected = {
     sourceMessageId,
@@ -5596,23 +5553,6 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   }
   res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
 });
-app.post("/api/admin/group/recover-pending-acceptance", requireAdmin, async (req, res) => {
-  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
-  const pending = db.prepare("SELECT * FROM order_candidates WHERE status='pending' AND pending_message_id IS NOT NULL ORDER BY pending_at DESC LIMIT 1").get();
-  if (!pending) return res.status(404).json({ error: "No pending acceptance found" });
-  const acceptanceMessageId = String(pending.pending_message_id);
-  const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE accepted_message_id=? LIMIT 1").get(acceptanceMessageId);
-  if (existing) return res.json({ success: true, alreadySettled: true, order: existing });
-  const acceptance = typeof client.getMessageById === "function" ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) : null;
-  if (!acceptance) return res.status(404).json({ error: "Pending acceptance message is not available", candidateId: pending.id });
-  const reacted = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
-  if (!reacted) return res.status(502).json({ error: "Bot reaction failed; settlement blocked", candidateId: pending.id });
-  const result = settlePendingOrder(pending.id, acceptanceMessageId, BOT_PHONE_INTL || BOT_PHONE);
-  if (result.state !== "accepted") return res.status(409).json({ error: "Pending settlement was not accepted", state: result.state, candidateId: pending.id });
-  void sendFinalBookingConfirmation(pending.group_id, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
-  res.json({ success: true, recovered: true, order: { id: result.order?.id, orderNo: result.order?.order_no, status: result.order?.status }, captain: result.captain?.phone });
-});
-
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
   if (!WHATSAPP_GROUP_ID.endsWith("@g.us")) throw new Error("WHATSAPP_GROUP_ID must end with @g.us");
