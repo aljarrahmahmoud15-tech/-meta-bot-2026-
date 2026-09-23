@@ -2418,23 +2418,25 @@ async function handleBaileysUpsert(message) {
 }
 
 async function reactToCaptainAcceptance(message, messageId) {
-  const liveMessage = client && isReady && messageId
-    ? await withTimeout(client.getMessageById(messageId), 12000, null)
-    : null;
-  const target = liveMessage || message;
-  if (!target || typeof target.react !== "function") return false;
-  try {
-    const reactionCompleted = await Promise.race([
-      Promise.resolve(target.react("👍")).then(() => true).catch(() => false),
-      new Promise((resolve) => setTimeout(() => resolve(false), 12000)),
-    ]);
-    return reactionCompleted === true;
-  } catch (error) {
-    console.error("[WhatsApp] captain acceptance reaction:", error.message);
-    return false;
+  const targets = [];
+  if (message && typeof message.react === "function") targets.push(message);
+  if (client && isReady && messageId && typeof client.getMessageById === "function") {
+    const liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
+    if (liveMessage && typeof liveMessage.react === "function") targets.push(liveMessage);
   }
+  const seen = new Set();
+  for (const target of targets) {
+    if (seen.has(target)) continue;
+    seen.add(target);
+    try {
+      await withTimeout(Promise.resolve(target.react("👍")), 12000, null);
+      return true;
+    } catch (error) {
+      console.error("[WhatsApp] captain acceptance reaction attempt:", error.message);
+    }
+  }
+  return false;
 }
-
 async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   if (!msg || (msg.fromMe && !allowSelf)) return;
   const groupId = resolveGroupChatId(msg);
