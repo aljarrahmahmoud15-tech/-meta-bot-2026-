@@ -2353,7 +2353,7 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
   if (resolved) return resolved;
   const labels = [contact?.pushname, contact?.name, contact?.shortName, message?._data?.notifyName].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
   if (!labels.length) return "";
-  const captains = db.prepare("SELECT phone,name FROM users WHERE role="captain" AND active=1 AND account_status="active"").all();
+  const captains = db.prepare("SELECT phone,name FROM users WHERE role='captain' AND active=1 AND account_status='active'").all();
   const match = captains.find((captain) => {
     const name = String(captain.name || "").trim().toLowerCase();
     return name && labels.some((label) => label === name || label.includes(name) || name.includes(label));
