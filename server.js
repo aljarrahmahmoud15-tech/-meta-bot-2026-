@@ -18,12 +18,13 @@ const { calculateSettlement } = require("./finance");
 const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole, parseGiftCommand, isGiftCommandAllowed } = require("./message_guardrails");
 const { handleGiftCommand, getGiftById } = require('./gift.js');
 const { getSubscriptionPlan, subscriptionExpiresAt, isSubscriptionActive } = require("./subscription");
+const { forwardMessage, forwardReaction } = require("./wasselni_forwarder");
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
-const BOT_NUMBER = process.env.BOT_NUMBER || "0775969880";
+const BOT_NUMBER = process.env.BOT_NUMBER || "0797217805";
 const BOT_PHONE = process.env.BOT_PHONE?.trim() || process.env.PHONE?.trim() || BOT_NUMBER;
-const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962775969880";
+const BOT_PHONE_INTL = process.env.BOT_PHONE_INTL?.trim() || "962797217805";
 const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID?.trim() || "";
 const WHATSAPP_GROUP_NAME = process.env.WHATSAPP_GROUP_NAME?.trim() || "قروب التشغيل المحدد من البيئة";
 let DATA_DIR = process.env.DATA_DIR || "/data";
@@ -2172,10 +2173,32 @@ function createClient() {
   instance.on("message", async (msg) => {
     if (generation !== connectionGeneration) return;
     recordGroupMessageTelemetry("message", msg);
+    if (!msg.fromMe) {
+      void (async () => {
+        try {
+          const groupId = resolveGroupChatId(msg);
+          if (!groupId || !isConfiguredGroup(groupId)) return;
+          const contact = typeof msg.getContact === "function" ? await withTimeout(msg.getContact(), 8000, null) : null;
+          const senderPhone = await resolveMessageSenderPhone(msg, contact);
+          const senderName = (contact && (contact.pushname || contact.name)) || msg._data?.notifyName || senderPhone;
+          const quoted = msg.hasQuotedMsg && typeof msg.getQuotedMessage === "function" ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+          await forwardMessage(msg, { groupId, senderPhone, senderName, quotedMessageId: serializedMessageId(quoted) });
+        } catch (error) { console.error("[Wasselni bridge] message forward:", error); }
+      })();
+    }
     try { await handleIncomingMessage(msg, { allowSelf: true }); } catch (error) { console.error("[WhatsApp] message handler:", error); }
   });
   instance.on("message_reaction", async (reaction) => {
     if (generation !== connectionGeneration) return;
+    void (async () => {
+      try {
+        const target = typeof instance.getMessageById === "function" ? await withTimeout(instance.getMessageById(reaction?.msgId), 10000, null) : null;
+        const groupId = target && resolveGroupChatId(target);
+        if (!groupId || !isConfiguredGroup(groupId)) return;
+        const senderPhone = await resolveReactionSenderPhone(reaction);
+        await forwardReaction(reaction, { groupId, senderPhone });
+      } catch (error) { console.error("[Wasselni bridge] reaction forward:", error); }
+    })();
     try { await handleMessageReaction(reaction); } catch (error) { console.error("[WhatsApp] reaction handler:", error); }
   });
   return instance;
