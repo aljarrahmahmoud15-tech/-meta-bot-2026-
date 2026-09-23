@@ -2384,14 +2384,16 @@ async function handleBaileysUpsert(message) {
 function reactionIsThumb(reaction) {
   return reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍");
 }
-
-function reactionConfirmsBot(reaction) {
+async function reactionConfirmsBot(reaction) {
   if (!reactionIsThumb(reaction)) return false;
   if (reaction.hasReactionByMe === true) return true;
-  return (Array.isArray(reaction.senders) ? reaction.senders : []).some((sender) => {
+  for (const sender of (Array.isArray(reaction.senders) ? reaction.senders : [])) {
     const senderPhone = sender?.__senderPhone || sender?.senderPhone || sender?.id?._serialized || sender?.id || sender?.senderId;
-    return isBotReactionSender(senderPhone, connectedBotPhone());
-  });
+    const resolvedPhone = directJordanPhoneFromWhatsappValue(senderPhone)
+      || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || senderPhone });
+    if (isBotReactionSender(resolvedPhone, connectedBotPhone())) return true;
+  }
+  return false;
 }
 
 async function readBotThumbReaction(messageId) {
@@ -2399,7 +2401,10 @@ async function readBotThumbReaction(messageId) {
   const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
   if (!liveMessage || typeof liveMessage.getReactions !== "function") return false;
   const reactions = await withTimeout(liveMessage.getReactions(), 8000, []);
-  return (Array.isArray(reactions) ? reactions : []).some(reactionConfirmsBot);
+  for (const reaction of (Array.isArray(reactions) ? reactions : [])) {
+    if (await reactionConfirmsBot(reaction)) return true;
+  }
+  return false;
 }
 
 async function waitForBotThumbReaction(messageId, attempts = 6, delayMs = 1500) {
