@@ -2418,17 +2418,18 @@ async function waitForBotThumbReaction(messageId, attempts = 6, delayMs = 1500) 
 async function reactToCaptainAcceptance(message, messageId) {
   if (!client || !isReady || !messageId) return false;
   try {
-    // If WhatsApp already shows an authorized bot thumb, do not send a duplicate.
-    if (await readBotThumbReaction(messageId)) return true;
-    let liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
-    if (!liveMessage && client.interface && typeof client.interface.openChatWindowAt === "function") {
+    let liveMessage = null;
+    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
       await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
       await new Promise((resolve) => setTimeout(resolve, 750));
-      liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
     }
+    liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
+    // If WhatsApp already shows an authorized bot thumb, do not send a duplicate.
+    if (await readBotThumbReaction(messageId)) return true;
     const target = liveMessage && typeof liveMessage.react === "function"
       ? liveMessage
       : (message && typeof message.react === "function" ? message : null);
+    console.info(`[WhatsApp] reaction target ${messageId}: live=${Boolean(liveMessage)} react=${Boolean(target)}`);
     let sent = false;
     if (target) {
       sent = await withTimeout((async () => {
@@ -2446,7 +2447,10 @@ async function reactToCaptainAcceptance(message, messageId) {
         } catch (_) { return false; }
       }, messageId), 12000, false);
     }
-    if (!sent) return false;
+    if (!sent) {
+      console.warn(`[WhatsApp] reaction send failed for ${messageId}`);
+      return false;
+    }
     return waitForBotThumbReaction(messageId);
   } catch (error) {
     console.error("[WhatsApp] captain acceptance reaction:", error.message);
