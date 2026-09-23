@@ -2317,6 +2317,18 @@ async function resolveWhatsappUserPhone(...values) {
   } catch (error) {
     console.warn(`[WhatsApp] LID phone resolution failed: ${String(error?.message || error)}`);
   }
+  for (const lid of lidIds) {
+    try {
+      const contact = await withTimeout(client.getContactById(lid), 8000, null);
+      const phone = directJordanPhoneFromWhatsappValue(contact) || directJordanPhoneFromWhatsappValue(contact?.number) || directJordanPhoneFromWhatsappValue(contact?.id);
+      if (phone) {
+        whatsappLidPhoneCache.set(lid, phone);
+        return phone;
+      }
+    } catch (error) {
+      console.warn(`[WhatsApp] LID empty-mapping fallback failed: ${String(error?.message || error)}`);
+    }
+  }
   return "";
 }
 async function resolveMessageSenderPhone(message, knownContact = null) {
