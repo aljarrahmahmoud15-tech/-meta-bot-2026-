@@ -5594,6 +5594,23 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   }
   res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
 });
+app.post("/api/admin/group/recover-pending-acceptance", requireAdmin, async (req, res) => {
+  if (!client || !isReady) return res.status(503).json({ error: "Bot not ready" });
+  const pending = db.prepare("SELECT * FROM order_candidates WHERE status='pending' AND pending_message_id IS NOT NULL ORDER BY pending_at DESC LIMIT 1").get();
+  if (!pending) return res.status(404).json({ error: "No pending acceptance found" });
+  const acceptanceMessageId = String(pending.pending_message_id);
+  const existing = db.prepare("SELECT id,order_no,status FROM orders WHERE accepted_message_id=? LIMIT 1").get(acceptanceMessageId);
+  if (existing) return res.json({ success: true, alreadySettled: true, order: existing });
+  const acceptance = typeof client.getMessageById === "function" ? await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) : null;
+  if (!acceptance) return res.status(404).json({ error: "Pending acceptance message is not available", candidateId: pending.id });
+  const reacted = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
+  if (!reacted) return res.status(502).json({ error: "Bot reaction failed; settlement blocked", candidateId: pending.id });
+  const result = settlePendingOrder(pending.id, acceptanceMessageId, BOT_PHONE_INTL || BOT_PHONE);
+  if (result.state !== "accepted") return res.status(409).json({ error: "Pending settlement was not accepted", state: result.state, candidateId: pending.id });
+  void sendFinalBookingConfirmation(pending.group_id, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
+  res.json({ success: true, recovered: true, order: { id: result.order?.id, orderNo: result.order?.order_no, status: result.order?.status }, captain: result.captain?.phone });
+});
+
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
   if (!WHATSAPP_GROUP_ID.endsWith("@g.us")) throw new Error("WHATSAPP_GROUP_ID must end with @g.us");
