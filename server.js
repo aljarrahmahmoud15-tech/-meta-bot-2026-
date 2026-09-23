@@ -2445,7 +2445,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (!insertedMessage.changes) return;
+  // قد يصل رد «تم» عبر أكثر من حدث WhatsApp؛ لا تمنع المعالجة المالية
+  // لمجرد أن سجل الرسالة أُدرج مسبقًا، فحالة المرشح تمنع التكرار فعليًا.
+  if (!insertedMessage.changes && !captainAcceptance) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
