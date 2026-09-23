@@ -2337,7 +2337,7 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
   if (!contact && typeof message?.getContact === "function") {
     contact = await withTimeout(message.getContact(), 8000, null);
   }
-  return resolveWhatsappUserPhone(
+  const resolved = await resolveWhatsappUserPhone(
     contact,
     contact?.number,
     contact?.id,
@@ -2350,6 +2350,15 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
     message?._data?.id?.participant,
     message?._data?.participant,
   );
+  if (resolved) return resolved;
+  const labels = [contact?.pushname, contact?.name, contact?.shortName, message?._data?.notifyName].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (!labels.length) return "";
+  const captains = db.prepare("SELECT phone,name FROM users WHERE role="captain" AND active=1 AND account_status="active"").all();
+  const match = captains.find((captain) => {
+    const name = String(captain.name || "").trim().toLowerCase();
+    return name && labels.some((label) => label === name || label.includes(name) || name.includes(label));
+  });
+  return match?.phone || "";
 }
 
 function recordGroupMessageTelemetry(event, msg) {
