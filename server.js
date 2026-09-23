@@ -2287,7 +2287,22 @@ async function resolveWhatsappUserPhone(...values) {
     const cached = whatsappLidPhoneCache.get(lid);
     if (cached && isValidJordanPhone(cached)) return cached;
   }
-  if (!client || !isReady || !lidIds.length || typeof client.getContactLidAndPhone !== "function") return "";
+  if (!client || !isReady || !lidIds.length) return "";
+  if (typeof client.getContactLidAndPhone !== "function") {
+    for (const lid of lidIds) {
+      try {
+        const contact = await withTimeout(client.getContactById(lid), 8000, null);
+        const phone = directJordanPhoneFromWhatsappValue(contact) || directJordanPhoneFromWhatsappValue(contact?.number) || directJordanPhoneFromWhatsappValue(contact?.id);
+        if (phone) {
+          whatsappLidPhoneCache.set(lid, phone);
+          return phone;
+        }
+      } catch (error) {
+        console.warn(`[WhatsApp] LID contact fallback failed: ${String(error?.message || error)}`);
+      }
+    }
+    return "";
+  }
   try {
     const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
     for (let index = 0; index < lidIds.length; index += 1) {
