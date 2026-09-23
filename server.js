@@ -2490,7 +2490,28 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
   if (!quoted) return;
-  const candidate = findOrderByQuotedMessage(groupId, quoted);
+  let candidate = findOrderByQuotedMessage(groupId, quoted);
+  // A reply can arrive after a restart or before the outgoing order event has
+  // been persisted. Recover the quoted valid order instead of dropping «تم».
+  if (!candidate) {
+    const quotedMessageId = serializedMessageId(quoted);
+    const quotedParsed = parseOrder(quoted.body);
+    if (quotedMessageId && quotedParsed.isOrder) {
+      const quotedContact = !quoted.fromMe && typeof quoted.getContact === "function"
+        ? await withTimeout(quoted.getContact(), 8000, null)
+        : null;
+      const quotedPhone = quoted.fromMe
+        ? connectedBotPhone()
+        : await resolveMessageSenderPhone(quoted, quotedContact);
+      const quotedProducer = quoted.fromMe
+        ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
+        : ensureProducerUser(quotedPhone, (quotedContact && (quotedContact.pushname || quotedContact.name)) || quoted._data?.notifyName || displayPhone(quotedPhone));
+      if (quotedProducer && quotedProducer.active === 1) {
+        candidate = createOrderCandidate({ messageId: quotedMessageId, groupId, body: String(quoted.body || ""), producer: quotedProducer, parsed: quotedParsed });
+        if (candidate) audit("order.candidate.recovered_from_acceptance_quote", "order_candidate", candidate.id, { groupId, sourceMessageId: quotedMessageId, acceptanceMessageId: serializedMessageId(msg) });
+      }
+    }
+  }
   if (!candidate) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
