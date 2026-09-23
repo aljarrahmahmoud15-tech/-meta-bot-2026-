@@ -2381,64 +2381,20 @@ async function handleBaileysUpsert(message) {
   await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
-function reactionIsThumb(reaction) {
-  return reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍");
-}
-async function reactionConfirmsBot(reaction) {
-  if (!reactionIsThumb(reaction)) return false;
-  if (reaction.hasReactionByMe === true) return true;
-  for (const sender of (Array.isArray(reaction.senders) ? reaction.senders : [])) {
-    const senderPhone = sender?.__senderPhone || sender?.senderPhone || sender?.id?._serialized || sender?.id || sender?.senderId;
-    const resolvedPhone = directJordanPhoneFromWhatsappValue(senderPhone)
-      || await resolveReactionSenderPhone({ senderId: sender?.senderId || sender?.id?._serialized || sender?.id || senderPhone });
-    if (isBotReactionSender(resolvedPhone, connectedBotPhone())) return true;
-  }
-  return false;
-}
-
-async function readBotThumbReaction(messageId) {
-  if (!client || !isReady || !messageId) return false;
-  const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
-  if (!liveMessage || typeof liveMessage.getReactions !== "function") return false;
-  const reactions = await withTimeout(liveMessage.getReactions(), 8000, []);
-  for (const reaction of (Array.isArray(reactions) ? reactions : [])) {
-    if (await reactionConfirmsBot(reaction)) return true;
-  }
-  return false;
-}
-
-async function waitForBotThumbReaction(messageId, attempts = 6, delayMs = 1500) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (await readBotThumbReaction(messageId)) return true;
-    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
-  }
-  return false;
-}
-
 async function reactToCaptainAcceptance(message, messageId) {
+  const target = message && typeof message.react === "function" ? message : null;
+  if (target) {
+    try {
+      await withTimeout(target.react("👍"), 12000, null);
+      return true;
+    } catch (error) {
+      console.warn("[WhatsApp] direct captain acceptance reaction failed:", error.message);
+    }
+  }
   if (!client || !isReady || !messageId) return false;
   try {
-    let liveMessage = null;
-    if (client.interface && typeof client.interface.openChatWindowAt === "function") {
-      await withTimeout(client.interface.openChatWindowAt(messageId), 12000, null);
-      await new Promise((resolve) => setTimeout(resolve, 750));
-    }
-    liveMessage = await withTimeout(client.getMessageById(messageId), 12000, null);
-    // If WhatsApp already shows an authorized bot thumb, do not send a duplicate.
-    if (await readBotThumbReaction(messageId)) return true;
-    const target = liveMessage && typeof liveMessage.react === "function"
-      ? liveMessage
-      : (message && typeof message.react === "function" ? message : null);
-    console.info(`[WhatsApp] reaction target ${messageId}: live=${Boolean(liveMessage)} react=${Boolean(target)}`);
-    let sent = false;
-    if (target) {
-      sent = await withTimeout((async () => {
-        await target.react("👍");
-        return true;
-      })(), 12000, false);
-    }
-    if (!sent && client.pupPage && typeof client.pupPage.evaluate === "function") {
-      sent = await withTimeout(client.pupPage.evaluate(async (serializedId) => {
+    if (client.pupPage && typeof client.pupPage.evaluate === "function") {
+      const sent = await withTimeout(client.pupPage.evaluate(async (serializedId) => {
         try {
           const msg = window.Store?.Msg?.get(serializedId);
           if (!msg || !window.WWebJS?.sendReactionToMessage) return false;
@@ -2446,12 +2402,12 @@ async function reactToCaptainAcceptance(message, messageId) {
           return true;
         } catch (_) { return false; }
       }, messageId), 12000, false);
+      if (sent) return true;
     }
-    if (!sent) {
-      console.warn(`[WhatsApp] reaction send failed for ${messageId}`);
-      return false;
-    }
-    return waitForBotThumbReaction(messageId);
+    const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
+    if (!liveMessage || typeof liveMessage.react !== "function") return false;
+    await withTimeout(liveMessage.react("👍"), 12000, null);
+    return true;
   } catch (error) {
     console.error("[WhatsApp] captain acceptance reaction:", error.message);
     return false;
@@ -2553,10 +2509,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
   if (producer.is_bot === 1 || producer.role === "company") {
     const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) console.warn(`[Order] company approval reaction failed; continuing financial approval candidate=${candidate.id}`);
-    // Bot/company ownership is already the approval authority. The visual reaction is
-    // best-effort only; a WhatsApp UI reaction failure must not leave a valid booking
-    // pending after a different captain replied «تم» to the quoted price.
+    if (!reacted) {
+      console.warn(`[Order] company approval reaction failed; leaving candidate pending=${candidate.id}`);
+      return;
+    }
+    // A 👍 reaction is the sole approval signal. The bot's own reaction is
+    // sufficient, and the reaction event path also accepts any group member.
     const result = settlePendingOrder(candidate.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
     if (result.state === "accepted") {
       void sendFinalBookingConfirmation(groupId, { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents }).catch(() => null);
@@ -2795,10 +2753,6 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
-  if (client && typeof client.getMessageById === "function") {
-    const hydratedAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null);
-    if (hydratedAcceptance) liveAcceptance = hydratedAcceptance;
-  }
   const quotedMessageIdHint = String(
     acceptance?.__quotedMessageId || acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
   ).trim();
@@ -2810,7 +2764,8 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     : null;
   const archivedQuoted = indexedQuoted || acceptance.__quoted || null;
   let liveQuoted = archivedQuoted;
-  if (!liveQuoted) {
+  if (!liveQuoted && client && typeof client.getMessageById === "function") {
+    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
     liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
       : liveAcceptance.__quoted || null;
@@ -2873,10 +2828,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  // The configured policy accepts any existing reaction on the acceptance message.
-  // WhatsApp may expose only hasReaction while hiding the emoji/sender details;
-  // that is still sufficient under this policy. Never send a reaction here.
-  const authorizedThumb = thumbs.length > 0 || reactionPresentOnAcceptance || hasBotConfirmationCard;
+  const authorizedThumb = botProducer
+    ? (reactedByBot || hasBotConfirmationCard)
+    : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -2934,14 +2888,10 @@ async function handleMessageReaction(reaction) {
   const pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
-  const botCompanyApproval = isBotPhone(approverPhone) && BOT_FINANCIAL_MODE === "company";
-  const approver = botCompanyApproval ? companyUser() : findActiveRegisteredUser(approverPhone);
-  if (!approverPhone || !producer || !approver || (!botCompanyApproval && (approver.is_bot === 1 || approver.role === "company")) || isBlockedPhone(approverPhone)) return;
-  const producerApproved = botCompanyApproval
-    ? (producer.role === "company" || producer.is_bot === 1)
-    : phoneWithCountry(producer.phone) === phoneWithCountry(approverPhone);
-  if (!producerApproved) return;
-  const result = settlePendingOrder(pending.id, messageId, approverPhone);
+  if (!producer) return;
+  // Per operations policy, any 👍 from a member of the configured group
+  // confirms a valid «تم» acceptance; the reactor's identity is not used.
+  const result = settlePendingOrder(pending.id, messageId, BOT_PHONE_INTL || BOT_PHONE);
   if (result.state !== "accepted") {
     console.warn(`[Order] reaction approval blocked candidate=${pending.id} state=${result.state}`);
     return;
@@ -4990,6 +4940,9 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
   if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
   const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
+  const botReactionConfirmed = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
+  if (!botReactionConfirmed) return res.status(502).json({ error: "Unable to send the required bot 👍 reaction; settlement was not applied", mutation: "none" });
+  acceptance.__botReactionConfirmed = true;
   const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   const expected = {
     sourceMessageId,
@@ -5011,7 +4964,7 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   if (!order) order = createOrderRecord({ messageId: sourceMessageId, groupId, body: evidence.rawText, producer: evidence.producer, parsed: evidence.parsed });
   if (!order) return res.status(409).json({ error: "Unable to create the matched order record", mutation: "none" });
   const confirmedByPhone = recoveryPhoneMatches(evidence.producerPhone, connectedBotPhone()) ? connectedBotPhone() : evidence.producerPhone;
-  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId: acceptanceMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
+  const result = settleHistoricalConfirmedOrder({ orderId: order.id, captainId: evidence.captain.id, acceptedMessageId, acceptedAt: evidence.acceptedAt, confirmedByPhone, importSource: "admin_exact_group_recovery" });
   if (result.state === "accepted") {
     const confirmationDetails = { orderNo: result.order?.order_no, executorName: result.captain?.name, consumerName: result.producer?.name, priceCents: result.order?.price_cents };
     void sendFinalBookingConfirmation(groupId, confirmationDetails).catch(() => null);
