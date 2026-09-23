@@ -2873,9 +2873,9 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  const authorizedThumb = botProducer
-    ? (reactedByBot || hasBotConfirmationCard)
-    : reactionPhones.some((phone) => recoveryPhoneMatches(phone, producerPhone));
+  // The configured policy accepts a 👍 from any group member as approval.
+  // Never send a reaction here; only read the reaction already present.
+  const authorizedThumb = thumbs.length > 0 || hasBotConfirmationCard;
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -4989,9 +4989,6 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
   const messages = await fetchExactGroupEvidenceMessages(groupId, sourceMessageId, acceptanceMessageId);
   if (!messages.length) return res.status(504).json({ error: "Unable to read the supplied group messages", mutation: "none" });
   const acceptance = (Array.isArray(messages) ? messages : []).find((message) => serializedMessageId(message) === acceptanceMessageId) || { id: { _serialized: acceptanceMessageId }, from: groupId, body: "تم", fromMe: false };
-  const botReactionConfirmed = await reactToCaptainAcceptance(acceptance, acceptanceMessageId);
-  if (!botReactionConfirmed) return res.status(502).json({ error: "Unable to send the required bot 👍 reaction; settlement was not applied", mutation: "none" });
-  acceptance.__botReactionConfirmed = true;
   const evidence = await inspectConfirmedRecoveryMessage(acceptance, messages, groupId);
   const expected = {
     sourceMessageId,
