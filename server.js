@@ -2795,6 +2795,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   if (resolveGroupChatId(liveAcceptance) !== groupId || liveAcceptance.fromMe || !isCaptainAcceptance(liveAcceptance.body)) {
     return { match: false, reason: "acceptance_not_in_configured_group" };
   }
+  if (client && typeof client.getMessageById === "function") {
+    const hydratedAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null);
+    if (hydratedAcceptance) liveAcceptance = hydratedAcceptance;
+  }
   const quotedMessageIdHint = String(
     acceptance?.__quotedMessageId || acceptance?.quotedMessageId || acceptance?._data?.quotedStanzaID || acceptance?._data?.quotedMessageId || acceptance?._data?.quotedMsgId || ""
   ).trim();
@@ -2806,8 +2810,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     : null;
   const archivedQuoted = indexedQuoted || acceptance.__quoted || null;
   let liveQuoted = archivedQuoted;
-  if (!liveQuoted && client && typeof client.getMessageById === "function") {
-    liveAcceptance = await withTimeout(client.getMessageById(acceptanceMessageId), 12000, null) || acceptance;
+  if (!liveQuoted) {
     liveQuoted = typeof liveAcceptance.getQuotedMessage === "function"
       ? await withTimeout(liveAcceptance.getQuotedMessage(), 12000, null)
       : liveAcceptance.__quoted || null;
