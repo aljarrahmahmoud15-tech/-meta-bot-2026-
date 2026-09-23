@@ -2479,11 +2479,12 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   let candidate = findOrderByQuotedMessage(groupId, quoted);
   // إذا فات حدث message_create الخاص برسالة البوت، أنشئ المرشح من الرسالة المقتبسة
   // فقط عندما تكون رسالة تشغيلية صادرة من البوت نفسه وفي القروب المعتمد.
-  if (!candidate && quoted.fromMe && isConfiguredGroup(groupId)) {
+  const quotedMessageId = serializedMessageId(quoted);
+  const quotedIsBotMessage = Boolean(quoted.fromMe) || String(quotedMessageId || "").startsWith("true_");
+  if (!candidate && quotedIsBotMessage && isConfiguredGroup(groupId)) {
     const quotedBody = String(quoted.body || "").trim();
     const quotedParsed = parseOrder(quotedBody);
     const botProducer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
-    const quotedMessageId = serializedMessageId(quoted);
     if (quotedMessageId && quotedParsed.isOrder && botProducer && botProducer.active === 1 && botProducer.account_status === "active") {
       candidate = createOrderCandidate({ messageId: quotedMessageId, groupId, body: quotedBody, producer: botProducer, parsed: quotedParsed });
     }
