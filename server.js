@@ -2476,7 +2476,18 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
   // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
   if (!quoted) return;
-  const candidate = findOrderByQuotedMessage(groupId, quoted);
+  let candidate = findOrderByQuotedMessage(groupId, quoted);
+  // إذا فات حدث message_create الخاص برسالة البوت، أنشئ المرشح من الرسالة المقتبسة
+  // فقط عندما تكون رسالة تشغيلية صادرة من البوت نفسه وفي القروب المعتمد.
+  if (!candidate && quoted.fromMe && isConfiguredGroup(groupId)) {
+    const quotedBody = String(quoted.body || "").trim();
+    const quotedParsed = parseOrder(quotedBody);
+    const botProducer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
+    const quotedMessageId = serializedMessageId(quoted);
+    if (quotedMessageId && quotedParsed.isOrder && botProducer && botProducer.active === 1 && botProducer.account_status === "active") {
+      candidate = createOrderCandidate({ messageId: quotedMessageId, groupId, body: quotedBody, producer: botProducer, parsed: quotedParsed });
+    }
+  }
   if (!candidate) return;
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : findCaptainByPhone(senderPhone, { activeOnly: true });
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
