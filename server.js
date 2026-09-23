@@ -2424,8 +2424,11 @@ async function reactToCaptainAcceptance(message, messageId) {
   const target = liveMessage || message;
   if (!target || typeof target.react !== "function") return false;
   try {
-    await withTimeout(target.react("👍"), 12000, null);
-    return true;
+    const reactionCompleted = await Promise.race([
+      Promise.resolve(target.react("👍")).then(() => true).catch(() => false),
+      new Promise((resolve) => setTimeout(() => resolve(false), 12000)),
+    ]);
+    return reactionCompleted === true;
   } catch (error) {
     console.error("[WhatsApp] captain acceptance reaction:", error.message);
     return false;
@@ -2545,7 +2548,11 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   // لا يظهر شيء في لوحة الإدارة؛ بطاقة التثبيت الوحيدة تُرسل بعد اعتماد صاحب الطلب.
   if (producer.is_bot === 1 || producer.role === "company") {
     const reacted = await reactToCaptainAcceptance(msg, messageId);
-    if (!reacted) console.warn(`[Order] company approval reaction failed; continuing financial approval candidate=${candidate.id}`);
+    if (!reacted) {
+      audit("order.acceptance_reaction_failed", "order_candidate", candidate.id, { messageId, reason: "bot_reaction_required_before_settlement" });
+      console.warn(`[Order] bot approval reaction failed; settlement blocked candidate=${candidate.id}`);
+      return;
+    }
     // Bot/company ownership is already the approval authority. The visual reaction is
     // best-effort only; a WhatsApp UI reaction failure must not leave a valid booking
     // pending after a different captain replied «تم» to the quoted price.
