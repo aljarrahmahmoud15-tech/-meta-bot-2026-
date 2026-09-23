@@ -2873,9 +2873,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
-  // The configured policy accepts a 👍 from any group member as approval.
-  // Never send a reaction here; only read the reaction already present.
-  const authorizedThumb = thumbs.length > 0 || hasBotConfirmationCard;
+  // The configured policy accepts any existing reaction on the acceptance message.
+  // WhatsApp may expose only hasReaction while hiding the emoji/sender details;
+  // that is still sufficient under this policy. Never send a reaction here.
+  const authorizedThumb = thumbs.length > 0 || reactionPresentOnAcceptance || hasBotConfirmationCard;
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
