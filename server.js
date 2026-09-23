@@ -2381,20 +2381,48 @@ async function handleBaileysUpsert(message) {
   await handleIncomingMessage(bridgedMessage, { allowSelf: true });
 }
 
+function reactionIsThumb(reaction) {
+  return reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍");
+}
+
+function reactionConfirmsBot(reaction) {
+  if (!reactionIsThumb(reaction)) return false;
+  if (reaction.hasReactionByMe === true) return true;
+  return (Array.isArray(reaction.senders) ? reaction.senders : []).some((sender) => {
+    const senderPhone = sender?.__senderPhone || sender?.senderPhone || sender?.id?._serialized || sender?.id || sender?.senderId;
+    return isBotReactionSender(senderPhone, connectedBotPhone());
+  });
+}
+
+async function readBotThumbReaction(messageId) {
+  if (!client || !isReady || !messageId) return false;
+  const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
+  if (!liveMessage || typeof liveMessage.getReactions !== "function") return false;
+  const reactions = await withTimeout(liveMessage.getReactions(), 8000, []);
+  return (Array.isArray(reactions) ? reactions : []).some(reactionConfirmsBot);
+}
+
+async function waitForBotThumbReaction(messageId, attempts = 6, delayMs = 1500) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await readBotThumbReaction(messageId)) return true;
+    if (attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return false;
+}
+
 async function reactToCaptainAcceptance(message, messageId) {
   const target = message && typeof message.react === "function" ? message : null;
-  if (target) {
-    try {
-      await withTimeout(target.react("👍"), 12000, null);
-      return true;
-    } catch (error) {
-      console.warn("[WhatsApp] direct captain acceptance reaction failed:", error.message);
-    }
-  }
   if (!client || !isReady || !messageId) return false;
   try {
-    if (client.pupPage && typeof client.pupPage.evaluate === "function") {
-      const sent = await withTimeout(client.pupPage.evaluate(async (serializedId) => {
+    let sent = false;
+    if (target) {
+      sent = await withTimeout((async () => {
+        await target.react("👍");
+        return true;
+      })(), 12000, false);
+    }
+    if (!sent && client.pupPage && typeof client.pupPage.evaluate === "function") {
+      sent = await withTimeout(client.pupPage.evaluate(async (serializedId) => {
         try {
           const msg = window.Store?.Msg?.get(serializedId);
           if (!msg || !window.WWebJS?.sendReactionToMessage) return false;
@@ -2402,12 +2430,18 @@ async function reactToCaptainAcceptance(message, messageId) {
           return true;
         } catch (_) { return false; }
       }, messageId), 12000, false);
-      if (sent) return true;
     }
-    const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
-    if (!liveMessage || typeof liveMessage.react !== "function") return false;
-    await withTimeout(liveMessage.react("👍"), 12000, null);
-    return true;
+    if (!sent) {
+      const liveMessage = await withTimeout(client.getMessageById(messageId), 8000, null);
+      if (liveMessage && typeof liveMessage.react === "function") {
+        sent = await withTimeout((async () => {
+          await liveMessage.react("👍");
+          return true;
+        })(), 12000, false);
+      }
+    }
+    if (!sent) return false;
+    return waitForBotThumbReaction(messageId);
   } catch (error) {
     console.error("[WhatsApp] captain acceptance reaction:", error.message);
     return false;
