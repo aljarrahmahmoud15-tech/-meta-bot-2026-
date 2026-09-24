@@ -2609,6 +2609,21 @@ async function hasVisibleThumbReaction(messageId) {
   }, messageId), 8000, false));
 }
 
+function reactionEmojiValue(reaction) {
+  return String(
+    reaction?.aggregateEmoji ||
+    reaction?.reaction ||
+    reaction?.emoji ||
+    reaction?.emojiCode ||
+    reaction?.text ||
+    ""
+  ).trim();
+}
+
+function isThumbReaction(reaction) {
+  return reactionEmojiValue(reaction) === "👍";
+}
+
 function settlePendingOrder(candidateId, expectedMessageId, confirmerPhone) {
   return db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidateId);
@@ -2819,7 +2834,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const reactions = Array.isArray(liveReactions) && liveReactions.length
     ? liveReactions
     : (Array.isArray(archivedReactions) && archivedReactions.length ? archivedReactions : (liveAcceptance.__reactions || acceptance.__reactions || []));
-  const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
+  const thumbs = (Array.isArray(reactions) ? reactions : []).filter(isThumbReaction);
   const reactionPhones = [];
   let reactedByBot = botReactionConfirmed || thumbs.some((reaction) => reaction.hasReactionByMe === true);
   for (const reaction of botProducer ? [] : thumbs) {
@@ -2849,9 +2864,14 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     const body = String(message?.__caption || message?.body || "");
     return Boolean(message?.fromMe) && timestamp >= acceptanceTimestamp && timestamp <= acceptanceTimestamp + 300 && /(تم تثبيت الطلب|تم توثيق الرحلة)/.test(body);
   });
+  // WhatsApp can expose hasReaction=true while hiding the reaction collection.
+  // Inspect the rendered message before treating a valid «تم» as unconfirmed.
+  const visibleThumbReaction = !thumbs.length && reactionPresentOnAcceptance
+    ? await hasVisibleThumbReaction(acceptanceMessageId)
+    : false;
   // Historical recovery follows the live policy: any 👍 on the valid «تم»
   // message confirms the booking; the reactor identity is intentionally ignored.
-  const authorizedThumb = thumbs.length > 0 || reactedByBot || hasBotConfirmationCard;
+  const authorizedThumb = thumbs.length > 0 || reactedByBot || hasBotConfirmationCard || visibleThumbReaction;
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -2875,6 +2895,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     reactedByBot,
     hasBotConfirmationCard,
     reactionPhones: [...new Set(reactionPhones)],
+    visibleThumbReaction,
     existingOrder,
     existingSettlement,
   };
@@ -5092,7 +5113,7 @@ app.post("/api/admin/group/import-confirmed-orders", requireAdmin, async (req, r
     const parsed = quoted ? parseOrder(quoted.body) : null;
     if (!quoted || !parsed?.isOrder) { skipped.push({ messageId: acceptanceMessageId, reason: "not_a_quoted_order" }); continue; }
     const reactions = typeof liveAcceptance.getReactions === "function" ? await withTimeout(liveAcceptance.getReactions(), 12000, acceptance.__reactions || []) : (acceptance.__reactions || []);
-    const thumbs = (Array.isArray(reactions) ? reactions : []).filter((reaction) => reaction && (reaction.aggregateEmoji === "👍" || reaction.reaction === "👍"));
+    const thumbs = (Array.isArray(reactions) ? reactions : []).filter(isThumbReaction);
     const reactionPhones = [];
     let reactedByBot = thumbs.some((reaction) => reaction.hasReactionByMe === true);
     for (const reaction of thumbs) {
