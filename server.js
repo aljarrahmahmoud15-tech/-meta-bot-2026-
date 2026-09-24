@@ -2776,6 +2776,8 @@ function recoveryEvidenceSummary(evidence) {
     rawText: evidence.rawText || null,
     authorizedThumb: Boolean(evidence.authorizedThumb),
     reactionPresent: Boolean(evidence.reactionPresentOnAcceptance),
+    visibleThumbReaction: Boolean(evidence.visibleThumbReaction),
+    reactionDetailsUnavailable: Boolean(evidence.reactionDetailsUnavailable),
     existingOrderNo: evidence.existingOrder?.order_no || null,
     existingSettlementStatus: evidence.existingSettlement?.status || null,
   };
@@ -2869,9 +2871,10 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   const visibleThumbReaction = !thumbs.length && reactionPresentOnAcceptance
     ? await hasVisibleThumbReaction(acceptanceMessageId)
     : false;
+  const reactionDetailsUnavailable = reactionPresentOnAcceptance && reactions.length === 0;
   // Historical recovery follows the live policy: any 👍 on the valid «تم»
   // message confirms the booking; the reactor identity is intentionally ignored.
-  const authorizedThumb = thumbs.length > 0 || reactedByBot || hasBotConfirmationCard || visibleThumbReaction;
+  const authorizedThumb = thumbs.length > 0 || reactedByBot || hasBotConfirmationCard || visibleThumbReaction || reactionDetailsUnavailable;
   const producer = botProducer ? companyUser() : (producerPhone ? findActiveRegisteredUser(producerPhone) : null);
   const captain = captainPhone ? findCaptainByPhone(captainPhone, { activeOnly: true }) : null;
   const existingOrder = db.prepare("SELECT * FROM orders WHERE source_message_id=? LIMIT 1").get(orderMessageId);
@@ -2896,6 +2899,7 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
     hasBotConfirmationCard,
     reactionPhones: [...new Set(reactionPhones)],
     visibleThumbReaction,
+    reactionDetailsUnavailable,
     existingOrder,
     existingSettlement,
   };
