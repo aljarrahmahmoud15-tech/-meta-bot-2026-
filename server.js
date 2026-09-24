@@ -5586,7 +5586,17 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const sent = await client.sendMessage(chatId, message);
-  const messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
+  let messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
+  if (!messageId && chatId.endsWith("@g.us")) {
+    try {
+      const chat = await resolveGroupChat(chatId);
+      const recent = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 20 }), 15000, []) : [];
+      const recovered = [...(Array.isArray(recent) ? recent : [])].reverse().find((item) => item && item.fromMe && String(item.body || "").trim() === message);
+      messageId = recovered ? serializedMessageId(recovered) : null;
+    } catch (error) {
+      console.warn(`[AdminSend] unable to recover sent group message id: ${error.message}`);
+    }
+  }
   audit("message.sent", "chat", chatId, { messageId, responseObject: Boolean(sent) });
   const parsed = chatId.endsWith("@g.us") ? parseOrder(message) : null;
   let order = null;
