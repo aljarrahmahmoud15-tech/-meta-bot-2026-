@@ -151,7 +151,7 @@ app.get("/health", (req, res) => {
 app.get("/captain/register", (req, res) => {
   const token = getSetting("captain_public_invite_token", null);
   if (!token) return res.status(503).send("Captain registration link is not ready");
-  res.redirect(`/captain?invite=${encodeURIComponent(token)}`);
+  res.redirect(`/join.html?invite=${encodeURIComponent(token)}`);
 });
 app.get("/captain", (req, res) => {
   res.sendFile(path.join(__dirname, "captain.html"));
