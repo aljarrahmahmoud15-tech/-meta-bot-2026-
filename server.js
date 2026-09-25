@@ -2563,8 +2563,14 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     return;
   }
   if (!body) return;
-  const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
-  if (!messageId) return;
+  // Use the same defensive serializer used by history/recovery.  WhatsApp
+  // can expose the id through __serializedId, _data.key.id, or toString()
+  // depending on whether the event arrived from the live WebJS collection.
+  const messageId = serializedMessageId(msg);
+  if (!messageId) {
+    console.warn(`[Order] message ignored without recoverable id body=${body.slice(0, 120)}`);
+    return;
+  }
   const giftCommand = parseGiftCommand(body);
   if (giftCommand) {
     await handleGiftMessage(msg, groupId, senderPhone, senderName, giftCommand, messageId);
@@ -2575,15 +2581,30 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     const producer = botGenerated
       ? (BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser())
       : ensureProducerUser(senderPhone, senderName);
-    if (!producer || producer.active === 0) return;
+    if (!producer || producer.active === 0) {
+      console.warn(`[Order] price candidate deferred: producer unresolved sender=${senderPhone || "unknown"} message=${messageId}`);
+      return;
+    }
     const candidate = createOrderCandidate({ messageId, groupId, body, producer, parsed });
     if (!candidate) return;
     return;
   }
   if (!captainAcceptance) return;
-  const quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  let quoted = msg.hasQuotedMsg ? await withTimeout(msg.getQuotedMessage(), 8000, null) : null;
+  // If WhatsApp has not hydrated the quoted object yet, recover it by id from
+  // the exact group evidence path before giving up on «تم».
+  if (!quoted) {
+    const quotedId = String(msg?.quotedStanzaID || msg?.quotedMessageId || msg?._data?.quotedStanzaID || msg?._data?.quotedMessageId || "").trim();
+    if (quotedId) {
+      const evidenceRows = await fetchExactGroupEvidenceMessages(groupId, quotedId, messageId);
+      quoted = evidenceRows.find((row) => serializedMessageId(row) === quotedId) || null;
+    }
+  }
   // يجب أن تكون «تم» مشاركة/ردًا على رسالة السعر نفسها؛ لا نعتمد رسالة مستقلة.
-  if (!quoted) return;
+  if (!quoted) {
+    console.warn(`[Order] acceptance ignored without quoted order message acceptance=${messageId}`);
+    return;
+  }
   let candidate = findOrderByQuotedMessage(groupId, quoted);
   // A reply can arrive after a restart or before the outgoing order event has
   // been persisted. Recover the quoted valid order instead of dropping «تم».
