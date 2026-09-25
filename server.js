@@ -3002,6 +3002,28 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
   };
 }
 
+async function recoverPendingCandidateFromReaction(target, groupId, messageId) {
+  try {
+    const history = await fetchGroupHistory(groupId, 200, { includeOutgoing: true });
+    const acceptance = (history.messages || []).find((message) => serializedMessageId(message) === messageId) || target;
+    const evidence = await inspectConfirmedRecoveryMessage(acceptance, history.messages || [], groupId);
+    if (!evidence.match || !evidence.authorizedThumb || !evidence.producer || !evidence.captain || !evidence.orderMessageId) return null;
+    let candidate = db.prepare("SELECT * FROM order_candidates WHERE source_message_id=? AND status='candidate' AND pending_message_id IS NULL LIMIT 1").get(evidence.orderMessageId);
+    if (!candidate) {
+      candidate = createOrderCandidate({ messageId: evidence.orderMessageId, groupId, body: evidence.rawText, producer: evidence.producer, parsed: evidence.parsed });
+    }
+    if (!candidate) return null;
+    const stamp = now();
+    db.prepare("UPDATE order_candidates SET status='pending',pending_captain_user_id=?,pending_message_id=?,pending_at=?,updated_at=? WHERE id=? AND status='candidate' AND pending_message_id IS NULL").run(evidence.captain.id, messageId, stamp, stamp, candidate.id);
+    const pending = db.prepare("SELECT * FROM order_candidates WHERE id=? AND status='pending' AND pending_message_id=?").get(candidate.id, messageId);
+    if (pending) audit("order.candidate.recovered_from_reaction", "order_candidate", pending.id, { groupId, sourceMessageId: evidence.orderMessageId, acceptanceMessageId: messageId });
+    return pending || null;
+  } catch (error) {
+    console.warn(`[Order] reaction candidate recovery failed: ${String(error?.message || error)}`);
+    return null;
+  }
+}
+
 async function handleMessageReaction(reaction) {
   if (!reaction) return;
   const reactionValue = String(reaction?.reaction || reaction?.emoji || reaction?.emojiCode || "").trim();
@@ -3046,6 +3068,7 @@ async function handleMessageReaction(reaction) {
       console.warn(`[Order] reaction-triggered acceptance recovery failed: ${String(error?.message || error)}`);
     }
     pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+    if (!pending) pending = await recoverPendingCandidateFromReaction(target, target.from, messageId);
   }
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
