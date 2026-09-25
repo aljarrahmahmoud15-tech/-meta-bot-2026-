@@ -2293,6 +2293,43 @@ async function resolveLidPhonesViaPage(lidIds) {
     return [];
   }
 }
+async function primeGroupLidPhoneCache(groupId) {
+  if (!client?.pupPage || !groupId) return 0;
+  try {
+    const mappings = await withTimeout(client.pupPage.evaluate(async (requestedGroupId) => {
+      try {
+        const { createWid } = window.require("WAWebWidFactory");
+        const collections = window.require("WAWebCollections");
+        const { toPn } = window.require("WAWebLidMigrationUtils");
+        const wid = createWid(requestedGroupId);
+        const chat = collections.Chat.get(wid) || (await window.require("WAWebFindChatAction").findOrCreateLatestChat(wid))?.chat;
+        const metadata = chat?.groupMetadata;
+        const participants = metadata?.participants?.getModelsArray ? metadata.participants.getModelsArray() : [];
+        return participants.map((participant) => {
+          const source = participant?.id;
+          const lid = source?._serialized || (source?.user && source?.server ? `${source.user}@${source.server}` : String(source || ""));
+          if (!/@lid$/i.test(lid)) return null;
+          const phoneId = toPn(source) || toPn(lid);
+          const phone = phoneId?.user ? String(phoneId.user) : String(phoneId?._serialized || "").split("@")[0].split(":")[0];
+          return { lid, phone };
+        }).filter((item) => item && item.phone);
+      } catch (_) {
+        return [];
+      }
+    }, groupId), 15000, []);
+    let added = 0;
+    for (const mapping of Array.isArray(mappings) ? mappings : []) {
+      const phone = phoneWithCountry(mapping.phone);
+      if (!isValidJordanPhone(phone) || !mapping.lid) continue;
+      whatsappLidPhoneCache.set(String(mapping.lid), phone);
+      added += 1;
+    }
+    return added;
+  } catch (error) {
+    console.warn(`[WhatsApp] group LID cache prime failed: ${String(error?.message || error)}`);
+    return 0;
+  }
+}
 function directJordanPhoneFromWhatsappValue(value) {
   if (!value) return "";
   const serialized = serializedWhatsappUserId(value);
@@ -2363,8 +2400,14 @@ async function resolveMessageSenderPhone(message, knownContact = null) {
   ];
   let phone = await resolveWhatsappUserPhone(...values);
   if (phone) return phone;
-  for (const delay of [350, 900]) {
+  for (const delay of [350, 900, 1800, 3000]) {
     await new Promise((resolve) => setTimeout(resolve, delay));
+    phone = await resolveWhatsappUserPhone(...values);
+    if (phone) return phone;
+  }
+  const groupId = resolveGroupChatId(message);
+  if (groupId) {
+    await primeGroupLidPhoneCache(groupId);
     phone = await resolveWhatsappUserPhone(...values);
     if (phone) return phone;
   }
