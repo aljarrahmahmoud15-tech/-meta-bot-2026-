@@ -2552,7 +2552,9 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
     }
     return;
   }
-  if (!insertedMessage.changes) return;
+  // إذا كانت رسالة «تم» محفوظة مسبقًا، نسمح بإعادة تشغيل مسارها عند وصول 👍؛
+  // هذا يعيد إنشاء مرشح السعر المقتبس إذا سقطت المعالجة الحية بسبب تأخر LID.
+  if (!insertedMessage.changes && !captainAcceptance) return;
   if (isBlockedPhone(senderPhone)) {
     console.warn(`[Policy] blocked phone ignored: ${senderPhone}`);
     return;
@@ -3020,7 +3022,15 @@ async function handleMessageReaction(reaction) {
     const result = cancelOrderForReactionRemoval(order.id, messageId, approverPhone);
     return;
   }
-  const pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+  let pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+  if (!pending && isCaptainAcceptance(target.body)) {
+    try {
+      await handleIncomingMessage(target, { allowSelf: true });
+    } catch (error) {
+      console.warn(`[Order] reaction-triggered acceptance recovery failed: ${String(error?.message || error)}`);
+    }
+    pending = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
+  }
   if (!pending) return;
   const producer = pending.producer_user_id ? db.prepare("SELECT * FROM users WHERE id=?").get(pending.producer_user_id) : null;
   if (!producer) return;
