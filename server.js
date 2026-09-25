@@ -2248,12 +2248,14 @@ function resolveGroupChatId(message) {
 }
 function serializedMessageId(message) {
   const raw = message && message.id;
+  const rawString = raw && typeof raw.toString === "function" ? String(raw.toString()) : "";
   return String(
     message?.__serializedId ||
     raw?._serialized ||
     raw?.id ||
     message?._data?.id ||
     message?._data?.key?.id ||
+    (rawString && rawString !== "[object Object]" ? rawString : "") ||
     ""
   ).trim() || null;
 }
@@ -2425,8 +2427,8 @@ function recordGroupMessageTelemetry(event, msg) {
     fromMe: Boolean(msg.fromMe),
     configured,
     hasQuotedMessage: Boolean(msg.hasQuotedMsg),
-    messageId: String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null,
-    quotedMessageId: String(msg?.quotedMsg?.id?._serialized || msg?._data?.quotedMsg?.id?._serialized || "").trim() || null,
+    messageId: serializedMessageId(msg),
+    quotedMessageId: String(msg?.quotedStanzaID || msg?.quotedMessageId || msg?._data?.quotedStanzaID || msg?.quotedMsg?.id?._serialized || msg?._data?.quotedMsg?.id?._serialized || "").trim() || null,
   };
   // Keep the general last-event fields for backward compatibility, but retain
   // separate official/ignored streams so an unrelated group cannot overwrite
@@ -2534,7 +2536,7 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   let insertedMessage = { changes: 0 };
   if (body) {
     const stamp = now();
-    const messageId = String(msg?.id?._serialized || msg?.id?.id || msg?._data?.id || msg?._data?.key?.id || "").trim() || null;
+    const messageId = serializedMessageId(msg);
     if (messageId) {
       insertedMessage = db.prepare("INSERT OR IGNORE INTO messages(message_id,group_id,sender_phone,sender_name,body,message_type,sent_at,created_at) VALUES(?,?,?,?,?,?,?,?)").run(messageId, groupId, senderPhone, senderName, body, msg.type || "text", new Date(Number(msg.timestamp || Date.now() / 1000) * 1000).toISOString(), stamp);
     }
@@ -3001,14 +3003,24 @@ async function inspectConfirmedRecoveryMessage(acceptance, messages, groupId) {
 }
 
 async function handleMessageReaction(reaction) {
-  const reactionValue = String(reaction?.reaction || "").trim();
-  const removedThumb = reactionValue === "";
-  if (!reaction || (!removedThumb && reactionValue !== "👍")) return;
+  if (!reaction) return;
+  const reactionValue = String(reaction?.reaction || reaction?.emoji || reaction?.emojiCode || "").trim();
   const messageId = reactionId(reaction.msgId);
   if (!messageId || !client || !isReady) return;
   const target = await withTimeout(client.getMessageById(messageId), 10000, null);
   if (!target || !target.from || !String(target.from).endsWith("@g.us")) return;
   if (!isConfiguredGroup(target.from)) return;
+  // WhatsApp Web may emit an added-reaction event with an empty value while
+  // the live message already contains 👍. Check the live reaction collection
+  // and the rendered message before treating an empty event as removal.
+  let visibleThumb = false;
+  if (!reactionValue && typeof target.getReactions === "function") {
+    const liveReactions = await withTimeout(target.getReactions(), 8000, []);
+    visibleThumb = (Array.isArray(liveReactions) ? liveReactions : []).some(isThumbReaction);
+  }
+  if (!reactionValue && !visibleThumb) visibleThumb = await hasVisibleThumbReaction(messageId);
+  const removedThumb = reactionValue === "" && !visibleThumb;
+  if (!removedThumb && reactionValue !== "👍" && !visibleThumb) return;
   const approverPhone = await resolveReactionSenderPhone(reaction);
   if (removedThumb) {
     const candidate = db.prepare("SELECT * FROM order_candidates WHERE group_id=? AND status='pending' AND pending_message_id=? LIMIT 1").get(target.from, messageId);
@@ -5689,11 +5701,12 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   const chatId = to.endsWith("@g.us") || to.endsWith("@c.us") ? to : `${cleanPhone(to)}@c.us`;
   if (chatId.endsWith("@c.us") && isBlockedPhone(chatId.slice(0, -5))) return res.status(403).json({ error: "This phone is blocked by company policy" });
   const sent = await client.sendMessage(chatId, message);
-  let messageId = sent && sent.id && sent.id._serialized ? sent.id._serialized : null;
+  let messageId = serializedMessageId(sent);
   if (!messageId && chatId.endsWith("@g.us")) {
     try {
       const chat = await resolveGroupChat(chatId);
-      const recent = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 20 }), 15000, []) : [];
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const recent = chat && typeof chat.fetchMessages === "function" ? await withTimeout(chat.fetchMessages({ limit: 40 }), 15000, []) : [];
       const recovered = [...(Array.isArray(recent) ? recent : [])].reverse().find((item) => item && item.fromMe && String(item.body || "").trim() === message);
       messageId = recovered ? serializedMessageId(recovered) : null;
     } catch (error) {
@@ -5705,10 +5718,11 @@ app.post("/api/admin/send", requireAdmin, async (req, res) => {
   let order = null;
   if (parsed && parsed.isOrder && isConfiguredGroup(chatId)) {
     const producer = BOT_FINANCIAL_MODE === "company" ? companyUser() : botEmployeeUser();
-    const sourceMessageId = messageId || `admin-send-${Date.now()}-${crypto.randomUUID()}`;
-    order = createOrderCandidate({ messageId: sourceMessageId, groupId: chatId, body: message, producer, parsed });
+    // The message_create listener owns candidate creation. Never invent an
+    // admin-send-* source id: the acceptance reply quotes WhatsApp's real id.
+    if (messageId) order = createOrderCandidate({ messageId, groupId: chatId, body: message, producer, parsed });
   }
-  res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null });
+  res.json({ success: true, messageId, order: order ? { candidate: true, status: order.status } : null, warning: parsed?.isOrder && !messageId ? "sent_but_message_id_unresolved; waiting for message_create" : null });
 });
 function reconcileConfiguredGroupFromEnvironment() {
   if (!WHATSAPP_GROUP_ID) return;
