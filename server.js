@@ -2335,7 +2335,7 @@ function directJordanPhoneFromWhatsappValue(value) {
   const serialized = serializedWhatsappUserId(value);
   if (/@lid$/i.test(serialized)) return "";
   const raw = typeof value === "object"
-    ? (value.number || value.userid || value.phoneNumber?.user || value.phoneNumber?._serialized || serialized)
+    ? (value.number || value.phone || value.pn || value.userid || value.userId || value.phoneNumber?.user || value.phoneNumber?._serialized || value._data?.number || value._data?.phone || value._data?.userid || value._data?.phoneNumber?.user || value._data?.phoneNumber?._serialized || serialized)
     : serialized;
   const normalized = phoneWithCountry(String(raw || "").split("@")[0].split(":")[0]);
   return isValidJordanPhone(normalized) ? normalized : "";
@@ -2354,9 +2354,10 @@ async function resolveWhatsappUserPhone(...values) {
   if (typeof client.getContactLidAndPhone === "function") {
     try {
       const mappings = await withTimeout(client.getContactLidAndPhone(lidIds), 12000, []);
+      const rows = Array.isArray(mappings) ? mappings : (mappings && typeof mappings === "object" ? Object.values(mappings) : []);
       for (let index = 0; index < lidIds.length; index += 1) {
-        const mapping = Array.isArray(mappings) ? mappings[index] : null;
-        const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone);
+        const mapping = rows[index] || rows.find((item) => lidIds.includes(serializedWhatsappUserId(item?.lid || item?.id || item?.lidId)));
+        const phone = directJordanPhoneFromWhatsappValue(mapping?.pn || mapping?.phone || mapping?.phoneNumber || mapping);
         if (!phone) continue;
         const lid = serializedWhatsappUserId(mapping?.lid) || lidIds[index];
         whatsappLidPhoneCache.set(lid, phone);
@@ -2373,7 +2374,7 @@ async function resolveWhatsappUserPhone(...values) {
     if (!isValidJordanPhone(phone)) continue;
     const lid = String(mapping?.lid || "").trim();
     if (lid) whatsappLidPhoneCache.set(lid, phone);
-    whatsappLidPhoneCache.set(lidIds[0], phone);
+    whatsappLidPhoneCache.set(lid || lidIds[0], phone);
     console.warn(`[WhatsApp] resolved LID through page fallback: ${lid} -> ${phone}`);
     return phone;
   }
@@ -2607,7 +2608,10 @@ async function handleIncomingMessage(msg, { allowSelf = false } = {}) {
   const captain = isBotPhone(senderPhone) ? botEmployeeUser() : ensureCaptainUser(senderPhone, senderName);
   if (!captain || captain.active !== 1 || captain.account_status !== "active" || (captain.is_bot === 1 && !isBotPhone(senderPhone))) return;
   const producer = db.prepare("SELECT * FROM users WHERE id=?").get(candidate.producer_user_id);
-  if (!producer || captain.id === producer.id) return;
+  if (!producer || captain.id === producer.id) {
+    console.warn(`[Order] acceptance rejected: producer=${producer?.phone || "unresolved"} captain=${captain.phone || "unresolved"} sameUser=${Boolean(producer && captain.id === producer.id)}`);
+    return;
+  }
   const settlement = calculateSettlement({ priceCents: candidate.price_cents, orderKind: candidate.order_kind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
   const pending = db.transaction(() => {
     const current = db.prepare("SELECT * FROM order_candidates WHERE id=?").get(candidate.id);
