@@ -74,3 +74,18 @@ npm test
 | `message_guardrails.js` | فحص صيغة الأمر وحماية الحسابات |
 | `admin.html` | لوحة الإدارة وكتالوج الهدايا |
 | `test_gift.js` | اختبارات نظام الهدايا |
+
+## وضع الاختبار الآمن للحجوزات
+
+يوفر الخادم وضعًا رسميًا لمحاكاة قبول الكابتن والتسوية دون إرسال رسالة WhatsApp ودون لمس جداول `orders` أو `order_settlements` أو `wallet_ledger` أو أي محفظة إنتاجية.
+
+يتطلب المسار المحمي `mode=test` و`confirm=TEST_MODE`:
+
+```bash
+curl -X POST https://bot.wasselni-biz.com/api/admin/test-mode/simulate-booking \
+  -H 'Authorization: Bearer ADMIN_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"test","confirm":"TEST_MODE","testKey":"TEST-20260927-0001","price":3.17,"origin":"اختبار","destination":"تحقق","producerName":"منتج اختبار","captainName":"كابتن اختبار","startingCaptainBalance":100}'
+```
+
+يعيد المسار نتيجة `accepted_settled_simulated` وحساب حصة الشركة والمنتج ورسوم الكابتن ورصيد افتراضي بعد التسوية. كل نتيجة تحفظ في `test_booking_runs` فقط. يمكن قراءة آخر النتائج عبر `GET /api/admin/test-mode/runs`، ومسح سجلات الاختبار فقط عبر `POST /api/admin/test-mode/reset` مع `{"confirm":"RESET_TEST_MODE"}`. لا يؤثر Test Mode على WhatsApp أو الطلبات الحقيقية أو أرصدة الإنتاج.

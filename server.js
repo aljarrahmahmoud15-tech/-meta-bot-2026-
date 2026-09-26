@@ -449,6 +449,24 @@ CREATE TABLE IF NOT EXISTS order_settlements (
   FOREIGN KEY(producer_user_id) REFERENCES users(id),
   FOREIGN KEY(charged_user_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS test_booking_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  test_key TEXT NOT NULL UNIQUE,
+  source_text TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  origin TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  order_kind TEXT NOT NULL DEFAULT 'normal' CHECK(order_kind IN ('normal','order')),
+  producer_name TEXT NOT NULL,
+  captain_name TEXT NOT NULL,
+  captain_start_balance_cents INTEGER NOT NULL,
+  company_cents INTEGER NOT NULL,
+  producer_cents INTEGER NOT NULL,
+  captain_fee_cents INTEGER NOT NULL,
+  captain_end_balance_cents INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'simulated' CHECK(status IN ('simulated','reset')),
+  created_at TEXT NOT NULL
+);
 `);
 
 const existingInviteColumns = db.prepare("PRAGMA table_info(captain_invites)").all().map((column) => column.name);
@@ -5177,6 +5195,45 @@ app.post("/api/admin/group/confirm-one", requireAdmin, async (req, res) => {
     return res.status(201).json({ success: true, state: result.state, order: result.order, chargedWallet: result.chargedWallet, evidence: recoveryEvidenceSummary(evidence), confirmationText: finalBookingConfirmationText(confirmationDetails), mutation: "applied_once" });
   }
   res.status(result.state === "debt_limit" ? 409 : 422).json({ success: false, state: result.state, evidence: recoveryEvidenceSummary(evidence), mutation: "none" });
+});
+app.post("/api/admin/test-mode/simulate-booking", requireAdmin, (req, res) => {
+  if (String(req.body?.mode || "").toLowerCase() !== "test" || String(req.body?.confirm || "") !== "TEST_MODE") {
+    return res.status(400).json({ error: "Test Mode requires mode=test and confirm=TEST_MODE", mutation: "none" });
+  }
+  const testKey = String(req.body?.testKey || `TEST-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`).trim();
+  const price = Number(req.body?.price);
+  const priceCents = Math.round(price * 100);
+  const origin = String(req.body?.origin || "").trim().slice(0, 120);
+  const destination = String(req.body?.destination || "").trim().slice(0, 120);
+  const orderKind = req.body?.orderKind === "order" ? "order" : "normal";
+  const producerName = String(req.body?.producerName || "منتج اختبار").trim().slice(0, 120);
+  const captainName = String(req.body?.captainName || "كابتن اختبار").trim().slice(0, 120);
+  const startingCaptainBalanceCents = Math.round(Number(req.body?.startingCaptainBalance ?? 100) * 100);
+  if (!/^[A-Za-z0-9:_-]{8,100}$/.test(testKey)) return res.status(400).json({ error: "testKey غير صالح" });
+  if (!Number.isSafeInteger(priceCents) || priceCents <= 0 || priceCents > 100000000) return res.status(400).json({ error: "قيمة اختبار موجبة ومحدودة مطلوبة" });
+  if (!origin || !destination) return res.status(400).json({ error: "نقطة الانطلاق والوصول مطلوبة" });
+  if (!Number.isSafeInteger(startingCaptainBalanceCents) || startingCaptainBalanceCents < 0) return res.status(400).json({ error: "رصيد الكابتن الافتراضي غير صالح" });
+  const existing = db.prepare("SELECT * FROM test_booking_runs WHERE test_key=? LIMIT 1").get(testKey);
+  if (existing) return res.json({ success: true, duplicate: true, mode: "TEST", mutation: "test_record_only", sideEffects: { whatsapp: false, orders: false, productionWallets: false }, run: { ...existing, price: money(existing.price_cents), company: money(existing.company_cents), producer: money(existing.producer_cents), captainFee: money(existing.captain_fee_cents), captainEndBalance: money(existing.captain_end_balance_cents) } });
+  const settlement = calculateSettlement({ priceCents, orderKind, regularProducerRateBps: PRODUCER_RATE_BPS, specialOrderProducerRateBps: SPECIAL_ORDER_RATE_BPS, companyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS, specialOrderCompanyFromProducerRateBps: COMPANY_FROM_PRODUCER_RATE_BPS });
+  const captainEndBalanceCents = startingCaptainBalanceCents - settlement.confirmingCaptainFeeCents;
+  const sourceText = `السعر ${money(priceCents)} من ${origin} إلى ${destination}`;
+  const stamp = now();
+  const inserted = db.prepare(`INSERT INTO test_booking_runs(test_key,source_text,price_cents,origin,destination,order_kind,producer_name,captain_name,captain_start_balance_cents,company_cents,producer_cents,captain_fee_cents,captain_end_balance_cents,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'simulated',?)`).run(testKey, sourceText, priceCents, origin, destination, orderKind, producerName, captainName, startingCaptainBalanceCents, settlement.companyCents, settlement.producerNetCents, settlement.confirmingCaptainFeeCents, captainEndBalanceCents, stamp);
+  const run = db.prepare("SELECT * FROM test_booking_runs WHERE id=?").get(inserted.lastInsertRowid);
+  audit("test_mode.booking.simulated", "test_booking_run", inserted.lastInsertRowid, { testKey, priceCents, sourceText, simulatedAcceptance: true, simulatedSettlement: true, productionMutation: false });
+  res.status(201).json({ success: true, duplicate: false, mode: "TEST", state: "accepted_settled_simulated", mutation: "test_record_only", sideEffects: { whatsapp: false, orders: false, orderCandidates: false, productionWallets: false, productionLedger: false }, settlement: { price: money(priceCents), company: money(settlement.companyCents), producer: money(settlement.producerNetCents), captainFee: money(settlement.confirmingCaptainFeeCents), captainGross: money(settlement.captainGrossCents) }, run: { id: run.id, testKey: run.test_key, sourceText: run.source_text, producerName: run.producer_name, captainName: run.captain_name, captainStartBalance: money(run.captain_start_balance_cents), captainEndBalance: money(run.captain_end_balance_cents), createdAt: run.created_at } });
+});
+app.get("/api/admin/test-mode/runs", requireAdmin, (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query?.limit || 50), 200));
+  const runs = db.prepare("SELECT * FROM test_booking_runs ORDER BY id DESC LIMIT ?").all(limit).map((run) => ({ id: run.id, testKey: run.test_key, sourceText: run.source_text, price: money(run.price_cents), origin: run.origin, destination: run.destination, orderKind: run.order_kind, producerName: run.producer_name, captainName: run.captain_name, captainStartBalance: money(run.captain_start_balance_cents), company: money(run.company_cents), producer: money(run.producer_cents), captainFee: money(run.captain_fee_cents), captainEndBalance: money(run.captain_end_balance_cents), state: "accepted_settled_simulated", createdAt: run.created_at }));
+  res.json({ success: true, mode: "TEST", productionMutation: false, runs });
+});
+app.post("/api/admin/test-mode/reset", requireAdmin, (req, res) => {
+  if (String(req.body?.confirm || "") !== "RESET_TEST_MODE") return res.status(400).json({ error: "RESET_TEST_MODE confirmation is required", mutation: "none" });
+  const result = db.prepare("DELETE FROM test_booking_runs").run();
+  audit("test_mode.reset", "test_booking_run", "all", { deleted: result.changes, productionMutation: false });
+  res.json({ success: true, mode: "TEST", deleted: result.changes, mutation: "test_records_only", productionMutation: false });
 });
 app.post("/api/admin/group/confirm-verified-bot-booking", requireAdmin, async (req, res) => {
   const verified = {
