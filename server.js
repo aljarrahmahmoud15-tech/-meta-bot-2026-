@@ -19,6 +19,7 @@ const { isBotGeneratedMessage, isBotReactionSender, isBotFinancialRole, parseGif
 const { handleGiftCommand, getGiftById } = require('./gift.js');
 const { getSubscriptionPlan, subscriptionExpiresAt, isSubscriptionActive } = require("./subscription");
 const { forwardMessage, forwardReaction } = require("./wasselni_forwarder");
+const { ownerVaultConfigured, encryptOwnerVaultPayload, decryptOwnerVaultPayload } = require("./owner_vault");
 const app = express();
 app.set("trust proxy", 1);
 const PORT = Number(process.env.PORT || 10000);
@@ -520,6 +521,18 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_issue_idempotency ON 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_delivery_idempotency ON topup_cards(delivery_idempotency_key) WHERE delivery_idempotency_key IS NOT NULL AND delivery_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_void_idempotency ON topup_cards(void_idempotency_key) WHERE void_idempotency_key IS NOT NULL AND void_idempotency_key <> ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_topup_cards_redemption_idempotency ON topup_cards(redemption_idempotency_key) WHERE redemption_idempotency_key IS NOT NULL AND redemption_idempotency_key <> ''");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS owner_vault_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('credential','api_key','note','config')) DEFAULT 'credential',
+    encrypted_payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_accessed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_owner_vault_entries_updated ON owner_vault_entries(updated_at DESC);
+`);
 db.exec(`
   UPDATE users SET account_status=CASE WHEN active=1 THEN 'active' ELSE 'suspended' END
   WHERE account_status IS NULL OR account_status NOT IN ('pending','approved','active','suspended','merged','rejected');
@@ -5717,6 +5730,52 @@ app.get("/api/admin/orders/confirmed", requireAdmin, (req, res) => {
       orderType: row.order_kind === "order" ? "أوردر محدد" : "طلب عادي",
     })),
   });
+});
+function requireOwnerVault(req, res, next) {
+  if (!isAdmin(req)) return res.status(401).json({ error: "Unauthorized" });
+  if (!ownerVaultConfigured()) return res.status(503).json({ error: "Owner vault is not configured" });
+  next();
+}
+app.get("/api/admin/owner-vault/status", requireAdmin, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, configured: ownerVaultConfigured(), count: ownerVaultConfigured() ? db.prepare("SELECT COUNT(*) AS count FROM owner_vault_entries").get().count : 0 });
+});
+app.get("/api/admin/owner-vault", requireOwnerVault, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const entries = db.prepare("SELECT id,label,kind,created_at,updated_at,last_accessed_at FROM owner_vault_entries ORDER BY updated_at DESC, id DESC").all();
+  res.json({ success: true, entries });
+});
+app.post("/api/admin/owner-vault", requireOwnerVault, (req, res) => {
+  const label = String(req.body?.label || "").trim().slice(0, 160);
+  const kind = String(req.body?.kind || "credential").trim();
+  const value = String(req.body?.value || "");
+  const note = String(req.body?.note || "").slice(0, 2000);
+  if (!label || !value || !["credential", "api_key", "note", "config"].includes(kind)) return res.status(400).json({ error: "label, kind, and value are required" });
+  if (value.length > 20000) return res.status(400).json({ error: "value is too long" });
+  const stamp = now();
+  const result = db.prepare("INSERT INTO owner_vault_entries(label,kind,encrypted_payload,created_at,updated_at) VALUES(?,?,?,?,?)").run(label, kind, encryptOwnerVaultPayload({ value, note }), stamp, stamp);
+  audit("owner_vault.created", "owner_vault", result.lastInsertRowid, { label, kind });
+  res.status(201).json({ success: true, id: result.lastInsertRowid });
+});
+app.get("/api/admin/owner-vault/:id", requireOwnerVault, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid vault entry id" });
+  const entry = db.prepare("SELECT id,label,kind,encrypted_payload FROM owner_vault_entries WHERE id=?").get(id);
+  if (!entry) return res.status(404).json({ error: "Vault entry not found" });
+  const payload = decryptOwnerVaultPayload(entry.encrypted_payload);
+  db.prepare("UPDATE owner_vault_entries SET last_accessed_at=?,updated_at=updated_at WHERE id=?").run(now(), id);
+  audit("owner_vault.revealed", "owner_vault", id, { label: entry.label, kind: entry.kind });
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ success: true, id: entry.id, label: entry.label, kind: entry.kind, value: payload.value, note: payload.note });
+});
+app.delete("/api/admin/owner-vault/:id", requireOwnerVault, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "Invalid vault entry id" });
+  const entry = db.prepare("SELECT id,label,kind FROM owner_vault_entries WHERE id=?").get(id);
+  if (!entry) return res.status(404).json({ error: "Vault entry not found" });
+  db.prepare("DELETE FROM owner_vault_entries WHERE id=?").run(id);
+  audit("owner_vault.deleted", "owner_vault", id, { label: entry.label, kind: entry.kind });
+  res.json({ success: true, deleted: true });
 });
 app.get("/api/admin/company-wallet", requireAdmin, (req, res) => {
   res.setHeader("Cache-Control", "no-store");

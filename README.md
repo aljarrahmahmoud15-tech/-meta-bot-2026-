@@ -89,3 +89,10 @@ curl -X POST https://bot.wasselni-biz.com/api/admin/test-mode/simulate-booking \
 ```
 
 يعيد المسار نتيجة `accepted_settled_simulated` وحساب حصة الشركة والمنتج ورسوم الكابتن ورصيد افتراضي بعد التسوية. كل نتيجة تحفظ في `test_booking_runs` فقط. يمكن قراءة آخر النتائج عبر `GET /api/admin/test-mode/runs`، ومسح سجلات الاختبار فقط عبر `POST /api/admin/test-mode/reset` مع `{"confirm":"RESET_TEST_MODE"}`. لا يؤثر Test Mode على WhatsApp أو الطلبات الحقيقية أو أرصدة الإنتاج.
+
+
+## نافذة خزنة المالك
+
+تتضمن لوحة `/admin.html` نافذة خاصة لخزنة المالك، ولا تظهر القيم السرية في لوحة التشغيل الرئيسية. الوصول يتم عبر جلسة `requireAdmin` الحالية؛ يعرض الفهرس الاسم والنوع والتاريخ فقط، بينما تُشفّر القيم على الخادم باستخدام AES-256-GCM قبل إدخالها إلى SQLite. الكشف يتم عند الطلب مع `Cache-Control: no-store`، وتُسجّل عملية الكشف في `audit_logs` دون القيمة، والحذف يتطلب تأكيدًا صريحًا. لا توجد قيمة حقيقية أو مفتاح داخل Git.
+
+قبل النشر أضف مفتاحًا قويًا طويلًا باسم `OWNER_VAULT_KEY` في Render Secrets فقط، ولا تضعه في هذا المستودع.
