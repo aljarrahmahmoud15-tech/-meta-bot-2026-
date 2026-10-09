@@ -3548,8 +3548,9 @@ app.post("/api/captain/login", (req, res) => {
     if (invite?.status === "rejected") return res.status(403).json({ error: "تم رفض طلب تسجيل الكابتن؛ راجع الشركة لإعادة التفعيل" });
     return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم؛ تأكد من رقم الهاتف أو سجّل الكابتن لأول مرة" });
   }
-  if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "pin") return res.status(409).json({ error: "هذا الحساب يستخدم رمز تحقق WhatsApp" });
-  const pinValid = (Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash)) || validCaptainPassword(pin);
+  const sharedPasswordValid = validCaptainPassword(pin);
+  if (!sharedPasswordValid && normalizeCaptainAuthMethod(user.captain_auth_method) !== "pin") return res.status(409).json({ error: "هذا الحساب يستخدم رمز تحقق WhatsApp" });
+  const pinValid = sharedPasswordValid || (Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash));
   if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
   if (!user.active || user.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
   const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
