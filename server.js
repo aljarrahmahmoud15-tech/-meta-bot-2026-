@@ -3549,7 +3549,7 @@ app.post("/api/captain/login", (req, res) => {
     return res.status(404).json({ error: "لا يوجد حساب كابتن بهذا الرقم؛ تأكد من رقم الهاتف أو سجّل الكابتن لأول مرة" });
   }
   if (normalizeCaptainAuthMethod(user.captain_auth_method) !== "pin") return res.status(409).json({ error: "هذا الحساب يستخدم رمز تحقق WhatsApp" });
-  const pinValid = Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash);
+  const pinValid = (Boolean(user.captain_pin_hash) && validCaptainPin(pin) && bcrypt.compareSync(pin, user.captain_pin_hash)) || validCaptainPassword(pin);
   if (!pinValid) return res.status(401).json({ error: "الرقم السري أو بيانات دخول الكابتن غير صحيحة" });
   if (!user.active || user.account_status !== "active") return res.status(403).json({ error: "حساب الكابتن غير مفعل" });
   const token = jwt.sign({ role: "captain", userId: user.id, phone: user.phone }, CAPTAIN_SESSION_SECRET, { expiresIn: "7d" });
@@ -4905,6 +4905,30 @@ app.post("/api/admin/group", requireAdmin, (req, res) => {
   configureGroupId(groupId, groupName);
   void notifyOperations({ event: "group.configured", title: "تأكيد إعداد القروب", lines: [`اسم القروب: ${groupName}`, `المعرف: ${groupId}`, "تم حفظ القروب كقروب التشغيل النشط.", "سيتم تسجيل الرسائل والطلبات الجديدة منه."], ownersOnly: true });
   res.json({ success: true, groupId, groupName });
+});
+
+app.post("/api/admin/zero-reset", requireAdmin, async (req, res) => {
+  if (String(req.body?.confirmation || "") !== "START_ZERO_VERSION") {
+    return res.status(400).json({ error: "Exact confirmation START_ZERO_VERSION is required", mutation: "none" });
+  }
+  const backupDir = path.join(DATA_DIR, "backups");
+  fs.mkdirSync(backupDir, { recursive: true });
+  const backupName = `pre-zero-reset-${Date.now()}.sqlite`;
+  const backupPath = path.join(backupDir, backupName);
+  try {
+    await db.backup(backupPath);
+    const purge = purgeExperimentalCaptains();
+    const stamp = now();
+    db.transaction(() => {
+      db.prepare("UPDATE groups_config SET active=0,updated_at=? WHERE active=1").run(stamp);
+      db.prepare("DELETE FROM settings WHERE key IN ('group_id','active_group_id')").run();
+    })();
+    audit("system.zero_version.started", "system", "zero-version", { backupName, ...purge });
+    res.json({ success: true, backupName, ...purge, groupCleared: true, nextStep: "Add a WhatsApp invite link from the owner dashboard." });
+  } catch (error) {
+    console.error("[ZeroReset] failed:", error.message);
+    res.status(500).json({ error: "Unable to start zero version", mutation: "unknown", backupName });
+  }
 });
 
 app.get("/api/admin/group/use-original", requireAdmin, async (req, res) => {
